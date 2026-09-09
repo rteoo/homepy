@@ -6,6 +6,7 @@ from io import StringIO
 import json
 import os
 from pathlib import Path
+import socket
 import subprocess
 import sys
 from threading import Thread
@@ -14,7 +15,7 @@ from unittest.mock import Mock
 
 from homepy import HomeAssistant
 from homepy.cli import main
-from homepy.exceptions import APIError, AuthenticationError
+from homepy.exceptions import APIError, AuthenticationError, ResponseError, TransportError
 
 
 def fixture_environment(url):
@@ -24,8 +25,9 @@ def fixture_environment(url):
 
 
 @contextmanager
-def home_assistant_server():
+def home_assistant_server(*, responses=None):
     requests = []
+    responses = responses or {}
 
     class Handler(BaseHTTPRequestHandler):
         def log_message(self, *_args):
@@ -50,6 +52,8 @@ def home_assistant_server():
             headers = {}
             if self.headers.get("Authorization") != "Bearer test-only-token":
                 status, payload = 401, {"message": "credential should never appear"}
+            elif self.path in responses:
+                payload = responses[self.path]
             elif self.path == "/ha/api/":
                 payload = {"message": "API running."}
             elif self.path == "/ha/api/states/light.desk":
@@ -192,6 +196,55 @@ class HTTPIntegrationTests(unittest.TestCase):
                 self.assertEqual(main(argv, environ=env, client_factory=factory, stdout=out, stderr=err), 0)
                 factory.assert_called_with("test-only-token", ca_file="test-ca.pem", **expected)
                 self.assertEqual(err.getvalue(), "")
+
+    def test_malformed_server_shapes_raise_safe_client_errors(self):
+        cases = [
+            ("/ha/api/states", {"sensitive-fixture": True}, "get_states", (), {"domain": "light"}),
+            ("/ha/api/states", [{"entity_id": None}], "get_states", (), {"domain": "light"}),
+            ("/ha/api/config", [], "get_config", (), {}),
+            ("/ha/api/states/light.desk", [], "get_state", ("light.desk",), {}),
+        ]
+        for path, payload, method, args, kwargs in cases:
+            with self.subTest(method=method, payload=payload):
+                with home_assistant_server(responses={path: payload}) as (url, requests):
+                    client = HomeAssistant("test-only-token", host=url)
+                    with self.assertRaises(ResponseError) as caught:
+                        getattr(client, method)(*args, **kwargs)
+                    self.assertNotIn("sensitive-fixture", str(caught.exception))
+                    self.assertEqual(len(requests), 1)
+
+    def test_connection_refused_category_survives_cli_boundary(self):
+        # Reserve a loopback port without listening; no household endpoint is used.
+        with socket.socket() as reserved:
+            reserved.bind(("127.0.0.1", 0))
+            url = f"http://127.0.0.1:{reserved.getsockname()[1]}"
+            # Windows may take roughly two seconds to report a refused connect.
+            client = HomeAssistant("fixture-token", host=url, timeout=5)
+            with self.assertRaises(TransportError) as caught:
+                client.health()
+            self.assertEqual(caught.exception.category, "refused")
+            out, err = StringIO(), StringIO()
+            result = main(["health"], environ={"HA_TOKEN": "fixture-token", "HA_URL": url, "HA_TIMEOUT": "5"},
+                          stdout=out, stderr=err)
+            self.assertNotEqual(result, 0)
+            self.assertEqual(out.getvalue(), "")
+            details = json.loads(err.getvalue())["error"]
+            self.assertEqual(details["code"], "transport_error")
+            self.assertEqual(details["category"], "refused")
+            self.assertNotIn("fixture-token", err.getvalue())
+
+    def test_cli_http_error_includes_status_without_response_body(self):
+        with home_assistant_server() as (url, requests):
+            out, err = StringIO(), StringIO()
+            result = main(["health"], environ={"HA_TOKEN": "incorrect-test-token", "HA_URL": url},
+                          stdout=out, stderr=err)
+            self.assertNotEqual(result, 0)
+            details = json.loads(err.getvalue())["error"]
+            self.assertEqual(details["code"], "authentication_error")
+            self.assertEqual(details["status_code"], 401)
+            self.assertNotIn("credential should never appear", err.getvalue())
+            self.assertNotIn("incorrect-test-token", err.getvalue())
+            self.assertEqual(len(requests), 1)
 
 
 if __name__ == "__main__":

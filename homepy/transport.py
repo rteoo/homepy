@@ -53,7 +53,7 @@ class Transport:
         return f"{prefix}/api/{path}" if path else f"{prefix}/api/"
 
     @staticmethod
-    def _body(data: Any) -> tuple[bytes | str | None, str | None]:
+    def _body(data: Any) -> tuple[bytes | None, str | None]:
         if data is None:
             return None, None
         if isinstance(data, (dict, list, tuple, int, float, bool)):
@@ -137,7 +137,7 @@ class Transport:
             if query:
                 request_path += "?" + query
         body, content_type = self._body(data)
-        accept = {"json": "application/json", "text": "text/plain", "bytes": "application/octet-stream"}[response_type]
+        accept = {"json": "application/json", "text": "text/plain", "bytes": "*/*"}[response_type]
         headers = {"Authorization": f"Bearer {self.config.token}", "Accept": accept}
         if content_type:
             headers["Content-Type"] = content_type

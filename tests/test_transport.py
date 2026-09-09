@@ -133,7 +133,7 @@ class TransportTests(unittest.TestCase):
         self.assertEqual(transport.request("GET", "text", response_type="text"), "hello")
         self.assertEqual(_Handler.requests[-1][2], "text/plain")
         self.assertEqual(transport.request("GET", "text", response_type="bytes"), b"hello")
-        self.assertEqual(_Handler.requests[-1][2], "application/octet-stream")
+        self.assertEqual(_Handler.requests[-1][2], "*/*")
         self.assertEqual(_Handler.requests[-3][0], "/proxy/api/states?a=b")
 
     def test_json_body_and_bearer(self):
@@ -185,16 +185,19 @@ class TransportTests(unittest.TestCase):
             (OSError("secret-network"), "network"),
         )
         transport = Transport(self.config())
+        messages = {}
         for failure, category in failures:
             with self.subTest(category=category), patch.object(Transport, "_connection", side_effect=failure):
                 with self.assertRaises(TransportError) as caught:
                     transport.request("GET", "states")
                 self.assertEqual(caught.exception.category, category)
+                messages[category] = str(caught.exception)
                 details = error_details(caught.exception)
                 self.assertEqual(details["code"], "transport_error")
                 self.assertEqual(details["category"], category)
                 self.assertNotIn("secret", str(caught.exception))
                 self.assertNotIn("secret", "".join(traceback.format_exception(caught.exception)))
+        self.assertEqual(len(set(messages.values())), len(messages))
 
     def test_tls_contexts_use_public_ssl_configuration(self):
         verified = Transport(ConnectionConfig("x", "https://example.test"))._connection()

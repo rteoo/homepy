@@ -4,10 +4,11 @@ from __future__ import annotations
 
 from collections.abc import Iterable, Mapping
 from datetime import datetime
-from typing import Any, Self
+from typing import Any, Self, cast
 from urllib.parse import quote
 
 from .config import ConnectionConfig
+from .exceptions import ResponseError
 from .transport import Transport
 
 
@@ -54,6 +55,37 @@ def _params_timestamp(params: dict[str, Any], key: str, value: Timestamp | None)
         params[key] = _timestamp(value, key)
 
 
+def _object_response(value: Any, endpoint: str) -> dict[str, Any]:
+    if not isinstance(value, dict):
+        raise ResponseError(f"Home Assistant {endpoint} response is not a JSON object")
+    return cast(dict[str, Any], value)
+
+
+def _list_response(value: Any, endpoint: str) -> list[Any]:
+    if not isinstance(value, list):
+        raise ResponseError(f"Home Assistant {endpoint} response is not a JSON list")
+    return value
+
+
+def _object_list_response(value: Any, endpoint: str) -> list[dict[str, Any]]:
+    values = _list_response(value, endpoint)
+    if any(not isinstance(item, dict) for item in values):
+        raise ResponseError(f"Home Assistant {endpoint} response contains a non-object item")
+    return cast(list[dict[str, Any]], values)
+
+
+def _text_response(value: Any, endpoint: str) -> str:
+    if not isinstance(value, str):
+        raise ResponseError(f"Home Assistant {endpoint} response is not text")
+    return value
+
+
+def _bytes_response(value: Any, endpoint: str) -> bytes:
+    if not isinstance(value, bytes):
+        raise ResponseError(f"Home Assistant {endpoint} response is not bytes")
+    return value
+
+
 class HomeAssistant:
     """A small, synchronous Home Assistant REST API client."""
 
@@ -80,10 +112,15 @@ class HomeAssistant:
     @classmethod
     def from_env(cls) -> Self:
         """Create a client from ``ConnectionConfig.from_env()``."""
-        instance = cls.__new__(cls)
-        instance.config = ConnectionConfig.from_env()
-        instance._transport = Transport(instance.config)
-        return instance
+        config = ConnectionConfig.from_env()
+        return cls(
+            config.token,
+            config.host,
+            port=config.port,
+            timeout=config.timeout,
+            verify_ssl=config.verify_ssl,
+            ca_file=config.ca_file,
+        )
 
     def _request(
         self,
@@ -104,21 +141,23 @@ class HomeAssistant:
 
     def health(self) -> dict[str, Any]:
         """Return the API health message."""
-        return self._request("GET", "")
+        return _object_response(self._request("GET", ""), "health")
 
     def get_config(self) -> dict[str, Any]:
         """Return Home Assistant's current configuration."""
-        return self._request("GET", "config")
+        return _object_response(self._request("GET", "config"), "config")
 
     def get_components(self) -> list[Any]:
         """Return the loaded integration components."""
-        return self._request("GET", "components")
+        return _list_response(self._request("GET", "components"), "components")
 
     def get_states(self, *, domain: str | None = None) -> list[dict[str, Any]]:
         """Return states, optionally filtering by the entity domain locally."""
         if domain is not None and (not isinstance(domain, str) or not domain):
             raise ValueError("domain must be a non-empty string")
-        states = self._request("GET", "states")
+        states = _object_list_response(self._request("GET", "states"), "states")
+        if any(not isinstance(state.get("entity_id"), str) for state in states):
+            raise ResponseError("Home Assistant states response contains an invalid entity ID")
         if domain is None:
             return states
         prefix = f"{domain}."
@@ -126,7 +165,9 @@ class HomeAssistant:
 
     def get_state(self, entity_id: str) -> dict[str, Any]:
         """Return one entity state."""
-        return self._request("GET", f"states/{_segment(entity_id, 'entity_id')}")
+        return _object_response(
+            self._request("GET", f"states/{_segment(entity_id, 'entity_id')}"), "state"
+        )
 
     def set_state(
         self,
@@ -142,26 +183,34 @@ class HomeAssistant:
             data["attributes"] = dict(attributes)
         if force_update:
             data["force_update"] = True
-        return self._request("POST", f"states/{_segment(entity_id, 'entity_id')}", data=data)
+        return _object_response(
+            self._request("POST", f"states/{_segment(entity_id, 'entity_id')}", data=data),
+            "state",
+        )
 
     def delete_state(self, entity_id: str) -> dict[str, Any]:
         """Delete an entity state representation."""
-        return self._request("DELETE", f"states/{_segment(entity_id, 'entity_id')}")
+        return _object_response(
+            self._request("DELETE", f"states/{_segment(entity_id, 'entity_id')}"), "state deletion"
+        )
 
     def get_events(self) -> list[dict[str, Any]]:
         """Return event listeners."""
-        return self._request("GET", "events")
+        return _object_list_response(self._request("GET", "events"), "events")
 
     def fire_event(
         self, event_type: str, event_data: Mapping[str, Any] | None = None
     ) -> dict[str, Any]:
         """Fire an event with optional event data."""
         data = None if event_data is None else dict(event_data)
-        return self._request("POST", f"events/{_segment(event_type, 'event_type')}", data=data)
+        return _object_response(
+            self._request("POST", f"events/{_segment(event_type, 'event_type')}", data=data),
+            "event",
+        )
 
     def get_services(self) -> list[dict[str, Any]]:
         """Return registered services."""
-        return self._request("GET", "services")
+        return _object_list_response(self._request("GET", "services"), "services")
 
     def call_service(
         self,
@@ -186,7 +235,10 @@ class HomeAssistant:
             data.update(target)
         params = {"return_response": ""} if return_response else None
         path = f"services/{_segment(domain, 'domain')}/{_segment(service, 'service')}"
-        return self._request("POST", path, params=params, data=data)
+        result = self._request("POST", path, params=params, data=data)
+        if return_response:
+            return _object_response(result, "service")
+        return _object_list_response(result, "service")
 
     def get_history(
         self,
@@ -220,7 +272,7 @@ class HomeAssistant:
         path = "history/period"
         if start is not None:
             path += f"/{quote(_timestamp(start, 'start'), safe='')}"
-        return self._request("GET", path, params=params)
+        return _list_response(self._request("GET", path, params=params), "history")
 
     def get_logbook(
         self,
@@ -237,29 +289,33 @@ class HomeAssistant:
         path = "logbook"
         if start is not None:
             path += f"/{quote(_timestamp(start, 'start'), safe='')}"
-        return self._request("GET", path, params=params or None)
+        return _list_response(self._request("GET", path, params=params or None), "logbook")
 
     def get_error_log(self) -> str:
         """Return the current session's error log as text."""
-        return self._request("GET", "error_log", response_type="text")
+        return _text_response(self._request("GET", "error_log", response_type="text"), "error log")
 
     def get_camera_image(self, entity_id: str) -> bytes:
         """Return a camera snapshot as bytes."""
-        return self._request(
-            "GET", f"camera_proxy/{_segment(entity_id, 'entity_id')}", response_type="bytes"
+        return _bytes_response(
+            self._request(
+                "GET", f"camera_proxy/{_segment(entity_id, 'entity_id')}", response_type="bytes"
+            ),
+            "camera image",
         )
 
     def get_calendars(self) -> list[dict[str, Any]]:
         """Return calendar entities."""
-        return self._request("GET", "calendars")
+        return _object_list_response(self._request("GET", "calendars"), "calendars")
 
     def get_calendar_events(
         self, entity_id: str, start: Timestamp, end: Timestamp
     ) -> list[Any]:
         """Return calendar events in the exclusive start/end interval."""
         params = {"start": _timestamp(start, "start"), "end": _timestamp(end, "end")}
-        return self._request(
-            "GET", f"calendars/{_segment(entity_id, 'entity_id')}", params=params
+        return _list_response(
+            self._request("GET", f"calendars/{_segment(entity_id, 'entity_id')}", params=params),
+            "calendar events",
         )
 
     def render_template(
@@ -269,11 +325,13 @@ class HomeAssistant:
         data: dict[str, Any] = {"template": template}
         if variables is not None:
             data["variables"] = dict(variables)
-        return self._request("POST", "template", data=data, response_type="text")
+        return _text_response(
+            self._request("POST", "template", data=data, response_type="text"), "template"
+        )
 
     def check_config(self) -> dict[str, Any]:
         """Validate Home Assistant's configuration."""
-        return self._request("POST", "config/core/check_config")
+        return _object_response(self._request("POST", "config/core/check_config"), "config check")
 
     def handle_intent(
         self,
@@ -291,7 +349,7 @@ class HomeAssistant:
             payload = {"name": name}
             if data is not None:
                 payload["data"] = dict(data)
-        return self._request("POST", "intent/handle", data=payload)
+        return _object_response(self._request("POST", "intent/handle", data=payload), "intent")
 
 
 __all__ = ["HomeAssistant"]

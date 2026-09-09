@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+from collections.abc import Mapping
 from dataclasses import dataclass, field
 import ipaddress
 import math
@@ -143,19 +144,50 @@ class ConnectionConfig:
         )
 
     @classmethod
-    def from_env(cls) -> "ConnectionConfig":
-        host = os.environ.get("HA_URL") or os.environ.get("HA_HOST") or _DEFAULT_HOST
-        port_raw = os.environ.get("HA_PORT")
-        timeout_raw = os.environ.get("HA_TIMEOUT")
-        try:
-            port = int(port_raw) if port_raw else None
-        except (TypeError, ValueError):
-            raise _invalid("HA_PORT must be an integer from 1 to 65535") from None
-        try:
-            timeout = float(timeout_raw) if timeout_raw else 10.0
-        except (TypeError, ValueError):
-            raise _invalid("HA_TIMEOUT must be a finite positive number") from None
-        token = os.environ.get("HA_TOKEN")
+    def from_env(
+        cls,
+        environ: Mapping[str, str] | None = None,
+        *,
+        host: str | None = None,
+        port: int | None = None,
+        timeout: float | None = None,
+    ) -> "ConnectionConfig":
+        """Build configuration from an environment mapping and explicit overrides.
+
+        Explicit ``host``, ``port``, and ``timeout`` values take precedence.
+        Parsing of their corresponding environment values is skipped when an
+        override is present, so an unrelated malformed environment variable
+        cannot defeat a valid command-line setting.
+        """
+
+        source = os.environ if environ is None else environ
+        token = source.get("HA_TOKEN")
+        resolved_host = host if host is not None else source.get("HA_URL") or source.get("HA_HOST") or _DEFAULT_HOST
+
+        if port is None:
+            port_raw = source.get("HA_PORT")
+            try:
+                resolved_port = int(port_raw) if port_raw else None
+            except (TypeError, ValueError):
+                raise _invalid("HA_PORT must be an integer from 1 to 65535") from None
+        else:
+            resolved_port = port
+
+        if timeout is None:
+            timeout_raw = source.get("HA_TIMEOUT")
+            try:
+                resolved_timeout = float(timeout_raw) if timeout_raw else 10.0
+            except (TypeError, ValueError):
+                raise _invalid("HA_TIMEOUT must be a finite positive number") from None
+        else:
+            resolved_timeout = timeout
+
         if token is None:
             raise _invalid("HA_TOKEN is required")
-        return cls(token, host=host, port=port, timeout=timeout, ca_file=os.environ.get("HA_CA_FILE") or None)
+        return cls(
+            token,
+            host=resolved_host,
+            port=resolved_port,
+            timeout=resolved_timeout,
+            ca_file=source.get("HA_CA_FILE") or None,
+        )

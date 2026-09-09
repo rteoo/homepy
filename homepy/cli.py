@@ -4,31 +4,57 @@ from __future__ import annotations
 
 import argparse
 import json
-import math
 import os
 import sys
 from collections.abc import Mapping, Sequence
 from typing import Any, Callable, TextIO
 
 from .agent import AgentToolError, AgentTools
-from .exceptions import (
-    APIError,
-    AuthenticationError,
-    ConfigurationError,
-    HomeAssistantError,
-    NotFoundError,
-    ResponseError,
-    TransportError,
-)
+from .config import ConnectionConfig
+from .exceptions import error_details
 
 
 class CLIError(Exception):
     """A sanitized command-line error suitable for JSON stderr output."""
 
-    def __init__(self, code: str, message: str) -> None:
+    def __init__(
+        self,
+        code: str,
+        message: str,
+        *,
+        category: str | None = None,
+        status_code: int | None = None,
+        hint: str | None = None,
+    ) -> None:
         self.code = code
         self.message = message
+        self.category = category
+        self.status_code = status_code
+        self.hint = hint
         super().__init__(message)
+
+    @classmethod
+    def from_details(cls, details: Mapping[str, str | int]) -> "CLIError":
+        category = details.get("category")
+        status_code = details.get("status_code")
+        hint = details.get("hint")
+        return cls(
+            str(details["code"]),
+            str(details["message"]),
+            category=category if isinstance(category, str) else None,
+            status_code=status_code if isinstance(status_code, int) else None,
+            hint=hint if isinstance(hint, str) else None,
+        )
+
+    def to_details(self) -> dict[str, str | int]:
+        details: dict[str, str | int] = {"code": self.code, "message": self.message}
+        if self.category is not None:
+            details["category"] = self.category
+        if self.status_code is not None:
+            details["status_code"] = self.status_code
+        if self.hint is not None:
+            details["hint"] = self.hint
+        return details
 
 
 class _ArgumentParser(argparse.ArgumentParser):
@@ -56,7 +82,7 @@ def _add_action_options(parser: argparse.ArgumentParser) -> None:
         action="append",
         default=None,
         metavar="DOMAIN.SERVICE",
-        help="Permit only this exact service (repeatable; empty means deny all)",
+        help="Permit only this exact service (repeatable; omission is unrestricted only with --allow-actions)",
     )
 
 
@@ -125,45 +151,46 @@ def _default_client_factory(
         raise CLIError("client_error", "Home Assistant client is unavailable") from None
     try:
         return HomeAssistant(token, host=host, port=port, timeout=timeout, ca_file=ca_file)
-    except Exception:
-        raise CLIError("client_error", "Could not configure Home Assistant client") from None
+    except Exception as exc:
+        raise CLIError.from_details(error_details(exc)) from None
 
 
 def _make_client(args: argparse.Namespace, environ: Mapping[str, str], client_factory: Callable[..., Any]) -> Any:
-    token = environ.get("HA_TOKEN")
-    if not isinstance(token, str) or not token:
+    if not environ.get("HA_TOKEN"):
         raise CLIError("missing_token", "HA_TOKEN environment variable is required")
-    host = args.host if args.host is not None else environ.get("HA_URL") or environ.get("HA_HOST") or "homeassistant.local"
-    port = args.port
-    if port is None:
-        port_raw = environ.get("HA_PORT")
-        if port_raw:
-            try:
-                port = int(port_raw)
-            except (TypeError, ValueError):
-                raise CLIError("invalid_arguments", "HA_PORT must be an integer") from None
-    timeout = args.timeout
-    if timeout is None:
-        timeout_raw = environ.get("HA_TIMEOUT")
-        if timeout_raw:
-            try:
-                timeout = float(timeout_raw)
-            except (TypeError, ValueError):
-                raise CLIError("invalid_arguments", "HA_TIMEOUT must be a number") from None
-        else:
-            timeout = 10.0
-    if not math.isfinite(timeout) or timeout <= 0:
-        raise CLIError("invalid_arguments", "Timeout must be greater than zero")
-    ca_file = environ.get("HA_CA_FILE") or None
-    factory_kwargs = {"host": host, "port": port, "timeout": timeout}
-    if ca_file is not None:
-        factory_kwargs["ca_file"] = ca_file
     try:
-        return client_factory(token, **factory_kwargs)
-    except CLIError:
-        raise
-    except Exception:
-        raise CLIError("client_error", "Could not configure Home Assistant client") from None
+        config = ConnectionConfig.from_env(
+            environ,
+            host=args.host,
+            port=args.port,
+            timeout=args.timeout,
+        )
+    except Exception as exc:
+        raise CLIError.from_details(error_details(exc)) from None
+    factory_kwargs: dict[str, Any] = {
+        "host": config.host,
+        "port": config.port,
+        "timeout": config.timeout,
+    }
+    if config.ca_file is not None:
+        factory_kwargs["ca_file"] = config.ca_file
+    return client_factory(config.token, **factory_kwargs)
+
+
+def _new_agent_tools(
+    client: Any,
+    *,
+    allow_actions: bool = False,
+    allowed_services: list[str] | None = None,
+) -> AgentTools:
+    try:
+        return AgentTools(
+            client,
+            allow_actions=allow_actions,
+            allowed_services=allowed_services,
+        )
+    except TypeError:
+        raise CLIError("invalid_arguments", "Invalid service policy") from None
 
 
 def _run(args: argparse.Namespace, environ: Mapping[str, str], client_factory: Callable[..., Any]) -> Any:
@@ -179,13 +206,15 @@ def _run(args: argparse.Namespace, environ: Mapping[str, str], client_factory: C
         return _safe_client_call(client, "health")
 
     if args.command == "states":
-        return AgentTools(client).dispatch("ha_get_states", {"domain": args.domain} if args.domain is not None else {})
+        return _new_agent_tools(client).dispatch(
+            "ha_get_states", {"domain": args.domain} if args.domain is not None else {}
+        )
 
     if args.command == "state":
-        return AgentTools(client).dispatch("ha_get_state", {"entity_id": args.entity_id})
+        return _new_agent_tools(client).dispatch("ha_get_state", {"entity_id": args.entity_id})
 
     if args.command == "services":
-        return AgentTools(client).dispatch("ha_get_services", {})
+        return _new_agent_tools(client).dispatch("ha_get_services", {})
 
     if args.command == "call":
         arguments: dict[str, Any] = {"domain": args.domain, "service": args.service}
@@ -197,7 +226,7 @@ def _run(args: argparse.Namespace, environ: Mapping[str, str], client_factory: C
             arguments["target"] = target
         if args.return_response:
             arguments["return_response"] = True
-        return AgentTools(
+        return _new_agent_tools(
             client,
             allow_actions=args.allow_actions,
             allowed_services=args.allowed_service,
@@ -209,7 +238,7 @@ def _run(args: argparse.Namespace, environ: Mapping[str, str], client_factory: C
         # internal state rather than a user input case.
         if arguments is None:
             raise CLIError("invalid_arguments", "--arguments is required")
-        return AgentTools(
+        return _new_agent_tools(
             client,
             allow_actions=args.allow_actions,
             allowed_services=args.allowed_service,
@@ -223,25 +252,14 @@ def _safe_client_call(client: Any, method_name: str) -> Any:
         raise CLIError("client_error", "Home Assistant client is unavailable")
     try:
         value = client.health()
+    except Exception as exc:
+        raise CLIError.from_details(error_details(exc)) from None
+    try:
         # Keep stdout valid JSON and reject non-JSON values without exposing
         # serializer or client exception details.
         return json.loads(json.dumps(value, allow_nan=False))
-    except Exception as exc:
-        if isinstance(exc, AuthenticationError):
-            raise CLIError("authentication_error", "Home Assistant authentication failed") from None
-        if isinstance(exc, NotFoundError):
-            raise CLIError("not_found", "Home Assistant resource was not found") from None
-        if isinstance(exc, APIError):
-            raise CLIError("api_error", "Home Assistant rejected the request") from None
-        if isinstance(exc, ResponseError):
-            raise CLIError("response_error", "Home Assistant returned an invalid response") from None
-        if isinstance(exc, ConfigurationError):
-            raise CLIError("configuration_error", "Home Assistant configuration failed") from None
-        if isinstance(exc, TransportError):
-            raise CLIError("transport_error", "Home Assistant transport failed") from None
-        if isinstance(exc, HomeAssistantError):
-            raise CLIError("home_assistant_error", "Home Assistant request failed") from None
-        raise CLIError("request_failed", "Home Assistant request failed") from None
+    except (TypeError, ValueError, OverflowError):
+        raise CLIError("invalid_response", "Command returned unsupported data") from None
 
 
 def _write_json(stream: TextIO, value: Any) -> None:
@@ -279,10 +297,7 @@ def main(
         _write_json(out, result)
         return 0
     except (CLIError, AgentToolError) as exc:
-        _write_json(err, {"error": {"code": exc.code, "message": exc.message}})
-        return 2
-    except TypeError:
-        _write_json(err, {"error": {"code": "invalid_arguments", "message": "Invalid command-line arguments"}})
+        _write_json(err, {"error": exc.to_details()})
         return 2
     except Exception:
         # The CLI is an agent boundary: never print a traceback or exception

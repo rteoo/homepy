@@ -8,28 +8,42 @@ keeps an agent's callable surface explicit and reviewable.
 from __future__ import annotations
 
 from collections.abc import Iterable, Mapping
-import copy
 import json
 from typing import Any
 
-from .exceptions import (
-    APIError,
-    AuthenticationError,
-    ConfigurationError,
-    HomeAssistantError,
-    NotFoundError,
-    ResponseError,
-    TransportError,
-)
+from .exceptions import error_details
 
 
 class AgentToolError(Exception):
     """A safe, user-facing error raised while validating or dispatching a tool."""
 
-    def __init__(self, code: str, message: str) -> None:
+    def __init__(
+        self,
+        code: str,
+        message: str,
+        *,
+        category: str | None = None,
+        status_code: int | None = None,
+        hint: str | None = None,
+    ) -> None:
         self.code = code
         self.message = message
+        self.category = category
+        self.status_code = status_code
+        self.hint = hint
         super().__init__(message)
+
+    def to_details(self) -> dict[str, str | int]:
+        """Return the same safe fields exposed by ``error_details``."""
+
+        details: dict[str, str | int] = {"code": self.code, "message": self.message}
+        if self.category is not None:
+            details["category"] = self.category
+        if self.status_code is not None:
+            details["status_code"] = self.status_code
+        if self.hint is not None:
+            details["hint"] = self.hint
+        return details
 
 
 def _json_compatible(value: Any) -> Any:
@@ -42,23 +56,19 @@ def _json_compatible(value: Any) -> Any:
 
 
 def _client_error(exc: Exception) -> AgentToolError:
-    """Map known client failures to safe, useful agent categories."""
+    """Map a client failure through the shared safe exception classifier."""
 
-    if isinstance(exc, AuthenticationError):
-        return AgentToolError("authentication_error", "Home Assistant authentication failed")
-    if isinstance(exc, NotFoundError):
-        return AgentToolError("not_found", "Home Assistant resource was not found")
-    if isinstance(exc, APIError):
-        return AgentToolError("api_error", "Home Assistant rejected the request")
-    if isinstance(exc, ResponseError):
-        return AgentToolError("response_error", "Home Assistant returned an invalid response")
-    if isinstance(exc, ConfigurationError):
-        return AgentToolError("configuration_error", "Home Assistant configuration failed")
-    if isinstance(exc, TransportError):
-        return AgentToolError("transport_error", "Home Assistant transport failed")
-    if isinstance(exc, HomeAssistantError):
-        return AgentToolError("home_assistant_error", "Home Assistant request failed")
-    return AgentToolError("request_failed", "Home Assistant request failed")
+    details = error_details(exc)
+    category = details.get("category")
+    status_code = details.get("status_code")
+    hint = details.get("hint")
+    return AgentToolError(
+        str(details["code"]),
+        str(details["message"]),
+        category=category if isinstance(category, str) else None,
+        status_code=status_code if isinstance(status_code, int) else None,
+        hint=hint if isinstance(hint, str) else None,
+    )
 
 
 def _is_string(value: Any) -> bool:
@@ -76,7 +86,10 @@ def _validate_object(arguments: Any) -> dict[str, Any]:
     return copied
 
 
-def _validate_keys(arguments: Mapping[str, Any], allowed: set[str], required: set[str] = set()) -> None:
+def _validate_keys(
+    arguments: Mapping[str, Any], allowed: set[str], required: set[str] | None = None
+) -> None:
+    required = required or set()
     unknown = set(arguments) - allowed
     if unknown:
         raise AgentToolError("invalid_arguments", "Unknown tool argument")
@@ -130,7 +143,6 @@ class AgentTools:
     is intentional and is retained after construction.
     """
 
-    _READ_TOOLS = frozenset({"ha_get_states", "ha_get_state", "ha_get_services"})
     _ACTION_TOOL = "ha_call_service"
 
     def __init__(
@@ -230,7 +242,7 @@ class AgentTools:
                     },
                 }
             )
-        return copy.deepcopy(definitions)
+        return definitions
 
     def _call(self, method_name: str, *args: Any, **kwargs: Any) -> Any:
         """Call one known client method while keeping client errors private."""
