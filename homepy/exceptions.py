@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+
 class HomeAssistantError(Exception):
     """Base class for errors raised by homepy."""
 
@@ -15,12 +16,12 @@ class TransportError(HomeAssistantError):
 
     _CATEGORIES = frozenset({"dns", "refused", "timeout", "tls", "network"})
 
-    def __init__(self, message: str = "Home Assistant request failed", *, category: str = "network"):
+    def __init__(self, message: str | None = None, *, category: str = "network"):
         if not isinstance(category, str) or category not in self._CATEGORIES:
             category = "network"
         self.category = category
         self.hint = _TRANSPORT_HINTS.get(category, "Check network connectivity to Home Assistant.")
-        super().__init__(message)
+        super().__init__(_TRANSPORT_MESSAGES[category] if message is None else message)
 
 
 class APIError(TransportError):
@@ -49,9 +50,17 @@ class ResponseError(TransportError):
     """The server response could not be safely consumed or decoded."""
 
 
+_TRANSPORT_MESSAGES = {
+    "dns": "Home Assistant hostname could not be resolved",
+    "refused": "Home Assistant connection was refused",
+    "timeout": "Home Assistant connection timed out",
+    "tls": "Home Assistant TLS connection could not be established",
+    "network": "Home Assistant network request failed",
+}
+
 _TRANSPORT_HINTS = {
     "dns": "Check the Home Assistant hostname or DNS configuration.",
-    "refused": "Check that Home Assistant is running and reachable.",
+    "refused": "Check the host and port, and that Home Assistant is running.",
     "timeout": "Check network connectivity or increase the configured timeout.",
     "tls": "Check the HTTPS certificate or configured CA file.",
     "network": "Check network connectivity to Home Assistant.",

@@ -7,7 +7,9 @@ import traceback
 import unittest
 
 from homepy.agent import AgentToolError, AgentTools
+from homepy.config import ConnectionConfig
 from homepy.cli import main
+from homepy.exceptions import APIError, TransportError
 
 
 class FakeClient:
@@ -97,6 +99,34 @@ class AgentToolsTests(unittest.TestCase):
         self.assertNotIn("SECRET", str(raised.exception))
         self.assertNotIn("SECRET", "".join(traceback.format_exception(raised.exception)))
 
+    def test_shared_error_details_preserve_category_and_status(self):
+        class TypedClient(FakeClient):
+            def get_services(self):
+                raise TransportError("secret", category="refused")
+
+        with self.assertRaises(AgentToolError) as raised:
+            AgentTools(TypedClient()).dispatch("ha_get_services", {})
+        self.assertEqual(raised.exception.to_details()["category"], "refused")
+        self.assertIn("hint", raised.exception.to_details())
+
+        class APIClient(FakeClient):
+            def health(self):
+                raise APIError("private response body", status_code=503)
+
+        out, err = StringIO(), StringIO()
+        status = main(
+            ["health"],
+            environ={"HA_TOKEN": "SECRET"},
+            client_factory=lambda *a, **kw: APIClient(),
+            stdout=out,
+            stderr=err,
+        )
+        self.assertEqual(status, 2)
+        details = json.loads(err.getvalue())["error"]
+        self.assertEqual(details["code"], "api_error")
+        self.assertEqual(details["status_code"], 503)
+        self.assertNotIn("private response body", err.getvalue())
+
 
 class CLITests(unittest.TestCase):
     def run_cli(self, argv, client=None, token="SECRET"):
@@ -114,6 +144,57 @@ class CLITests(unittest.TestCase):
         self.assertEqual(status, 0)
         self.assertEqual(stderr, "")
         self.assertEqual(json.loads(stdout)["method"], "get_states")
+
+    def test_environment_overrides_are_shared_and_invalid_values_are_ignored(self):
+        source = {
+            "HA_TOKEN": "SECRET",
+            "HA_URL": "https://example.test/base/api",
+            "HA_HOST": "ignored.test",
+            "HA_PORT": "not-a-port",
+            "HA_TIMEOUT": "not-a-timeout",
+            "HA_CA_FILE": "custom-ca.pem",
+        }
+        config = ConnectionConfig.from_env(source, port=8124, timeout=2.5)
+        self.assertEqual(config.base_url, "https://example.test:8124/base")
+        self.assertEqual(config.timeout, 2.5)
+        self.assertEqual(config.ca_file, "custom-ca.pem")
+        self.assertEqual(source["HA_PORT"], "not-a-port")
+
+        captured: dict[str, object] = {}
+
+        def factory(token, **kwargs):
+            captured.update(kwargs)
+            return FakeClient()
+
+        out, err = StringIO(), StringIO()
+        status = main(
+            ["--port", "8125", "--timeout", "3", "services"],
+            environ=source,
+            client_factory=factory,
+            stdout=out,
+            stderr=err,
+        )
+        self.assertEqual(status, 0)
+        self.assertEqual(captured["host"], "https://example.test/base/api")
+        self.assertEqual(captured["port"], 8125)
+        self.assertEqual(captured["timeout"], 3.0)
+        self.assertEqual(captured["ca_file"], "custom-ca.pem")
+
+    def test_internal_type_error_is_not_mislabeled_as_invalid_arguments(self):
+        def broken_factory(*args, **kwargs):
+            raise TypeError("internal sentinel")
+
+        out, err = StringIO(), StringIO()
+        status = main(
+            ["services"],
+            environ={"HA_TOKEN": "SECRET"},
+            client_factory=broken_factory,
+            stdout=out,
+            stderr=err,
+        )
+        self.assertEqual(status, 1)
+        self.assertEqual(json.loads(err.getvalue())["error"]["code"], "internal_error")
+        self.assertNotIn("internal sentinel", err.getvalue())
 
     def test_call_requires_explicit_actions_and_supports_exact_allowlist(self):
         status, stdout, stderr, _ = self.run_cli(["call", "light", "turn_on"])

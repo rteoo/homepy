@@ -62,17 +62,18 @@ Use `python -m unittest discover -s tests -v` and real loopback HTTP tests to pr
 wire behavior, errors, agent dispatch, and CLI operation. Record any live-host
 verification gap. Approved packaging uses setuptools as a build-only dependency
 and installs the built package into a fresh local virtual environment for proof.
-There are no runtime dependencies, Git commits, pushes, or external mutations.
+There are no runtime dependencies, pushes, or external mutations. Local task
+commits preserve the implementation and reviewed fixes.
 
 ## Delivery status
 
 - Implemented all listed REST methods, connection settings, agent tools, and CLI.
-- Verified 37 tests on Windows Python 3.14.6, including real loopback HTTP,
+- Verified 48 tests on Windows Python 3.14.6, including real loopback HTTP,
   CLI subprocesses, timeout/truncation handling, and action policy. Compileall
   passed; source syntax also parses using the Python 3.11 grammar. Python 3.11
   runtime execution and live Home Assistant/Tailscale connectivity were not tested.
 - Completed parent review and an independent read-only agent/CLI review.
-- Added approved setuptools packaging for version 0.1.0, the `homepy` console
+- Added approved setuptools packaging for version 0.1.1, the `homepy` console
   command, explicit runtime package contents, and the typed-package marker.
 - Built both distributions with existing setuptools 81.0.0 and build 1.5.0.
   The wheel was built from the source archive, then installed offline with no
@@ -80,4 +81,22 @@ There are no runtime dependencies, Git commits, pushes, or external mutations.
 - Verified installed metadata, wheel/source archive contents, Python imports,
   real loopback HTTP, and both CLI entry points from outside the source checkout.
   The installed package declares no runtime dependencies. No host tooling was
-  upgraded, and no Git commits or remote mutations were made.
+  upgraded, and no remote mutations were made.
+
+## Review remediation
+
+- Reproduced the reported transport-error ambiguity, skipped subclass initializer,
+  malformed state/config response handling, and misleading empty-allowlist help.
+- Added safe transport categories and hints to Python, agent, and CLI errors;
+  consolidated the exception classification table and environment parser.
+- Restored normal subclass initialization and validate endpoint return containers
+  at runtime, preserving unknown fields. The `py.typed` marker remains; no static
+  type checker was available or installed, so static type checking is unverified.
+- Corrected CLI policy help and made installation paths portable. Bare-host
+  port 8123 and explicit URL scheme-port behavior are intentionally unchanged.
+- Used explicit UTF-8 request bytes, format-appropriate Accept headers, public TLS
+  context construction, and simpler connection cleanup and JSON rejection.
+  Removed redundant tool copying, mutable defaults, and broad TypeError labeling.
+- Saved the baseline before remediation and retained local review commits on
+  `fix/review-correctness`. Optional CI/linter setup and publishing metadata are
+  outside these correctness fixes; no new dependency was introduced.

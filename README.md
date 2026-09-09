@@ -9,16 +9,16 @@ integration-specific fields remain available in the returned dictionaries.
 
 ## Install
 
-Install into the Python environment used by your agent:
+From the repository root, install into the Python environment used by your agent:
 
 ```powershell
-python -m pip install C:\Users\rodri\Projects\homepy
+python -m pip install .
 ```
 
 Alternatively, install a built wheel without downloading dependencies:
 
 ```powershell
-python -m pip install --no-index --no-deps C:\Users\rodri\Projects\homepy\dist\homepy-0.1.0-py3-none-any.whl
+python -m pip install --no-index --no-deps ./dist/homepy-0.1.1-py3-none-any.whl
 ```
 
 Source builds use [setuptools 77 or later](https://setuptools.pypa.io/en/latest/userguide/pyproject_config.html).
@@ -80,6 +80,10 @@ A full URL uses its explicit port or the normal scheme port (HTTP 80, HTTPS 443)
 Include `:8123` in a full URL when needed. Reverse-proxy path prefixes work, and
 a trailing `/api` is accepted. The wrapper retains the requested bare-host default
 of 8123; set the actual port if your installation differs.
+
+For a typical local setup, use `HA_HOST=homeassistant.local` or
+`HA_URL=http://homeassistant.local:8123`. Setting
+`HA_URL=http://homeassistant.local` selects port 80.
 
 Tailscale must already provide connectivity from the machine running the agent
 to Home Assistant, directly or through a subnet router. Use the reachable
@@ -195,6 +199,8 @@ options.
 `python -m homepy tools` lists the tool schemas without a token or network
 connection. `--allowed-service DOMAIN.SERVICE` can be repeated on `call` and
 `tool` invocations to restrict the enabled action tool.
+Omitting that option permits any service only when `--allow-actions` is enabled.
+To deny every action from the CLI, omit `--allow-actions`.
 
 ## REST surface
 
@@ -223,6 +229,15 @@ Catch `HomeAssistantError` for client failures. More specific exceptions include
 `ConfigurationError`, `TransportError`, `AuthenticationError`, `NotFoundError`,
 `APIError`, and `ResponseError`. HTTP failures expose `status_code`. Invalid
 endpoint arguments raise `ValueError` or `TypeError` before a request is sent.
+
+`TransportError.category` distinguishes `dns`, `refused`, `timeout`, `tls`, and
+other `network` failures. CLI errors retain the `transport_error` code and add
+`category` and a safe `hint`; HTTP errors also include `status_code`. These fields
+do not contain the target URL, credentials, or raw server/OS error details.
+
+The Python client validates the documented response container types before
+returning data. Unexpected objects, lists, or state entries raise `ResponseError`;
+unknown fields inside otherwise valid responses are preserved.
 
 TLS certificate verification is enabled by default. Use `ca_file` or `HA_CA_FILE`
 for a private CA. HTTP redirects are rejected, ambient HTTP proxies are ignored,

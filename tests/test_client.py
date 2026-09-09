@@ -1,8 +1,10 @@
 import unittest
 from datetime import datetime, timezone
+import os
 from unittest.mock import patch
 
 from homepy.client import HomeAssistant
+from homepy.exceptions import ResponseError
 
 
 class ClientTests(unittest.TestCase):
@@ -135,6 +137,68 @@ class ClientTests(unittest.TestCase):
         )
         self.assertEqual(self.request.call_args.args, ("POST", "intent/handle"))
         self.assertEqual(self.request.call_args.kwargs["data"], {"name": "SetTimer", "data": {"seconds": "30"}})
+
+    def test_from_env_preserves_subclass_initialization_and_fields(self) -> None:
+        class TrackingClient(HomeAssistant):
+            def __init__(self, *args, **kwargs):
+                self.constructor_args = args, kwargs
+                super().__init__(*args, **kwargs)
+
+        values = {
+            "HA_TOKEN": "environment-token",
+            "HA_URL": "https://ha.example.test/proxy/api",
+            "HA_PORT": "9443",
+            "HA_TIMEOUT": "3.5",
+            "HA_CA_FILE": "ca.pem",
+        }
+        with patch.dict(os.environ, values, clear=True):
+            client = TrackingClient.from_env()
+
+        args, kwargs = client.constructor_args
+        self.assertEqual(args, ("environment-token", "https://ha.example.test/proxy/api"))
+        self.assertEqual(kwargs, {"port": 9443, "timeout": 3.5, "verify_ssl": True, "ca_file": "ca.pem"})
+        self.assertEqual(client.config.base_url, "https://ha.example.test:9443/proxy")
+
+    def test_malformed_endpoint_responses_raise_safe_response_errors(self) -> None:
+        cases = (
+            ("health", (), [], "health-secret"),
+            ("get_config", (), [], "config-secret"),
+            ("get_components", (), {}, "components-secret"),
+            ("get_states", (), {"secret": "states-secret"}, "states-secret"),
+            ("get_state", ("sensor.desk",), [], "state-secret"),
+            ("set_state", ("sensor.desk", "on"), [], "set-secret"),
+            ("delete_state", ("sensor.desk",), [], "delete-secret"),
+            ("get_events", (), ["event-secret"], "event-secret"),
+            ("fire_event", ("custom",), [], "fire-secret"),
+            ("get_services", (), ["service-secret"], "service-secret"),
+            ("get_history", (["sensor.desk"],), {}, "history-secret"),
+            ("get_logbook", (), {}, "logbook-secret"),
+            ("get_error_log", (), {}, "error-secret"),
+            ("get_camera_image", ("camera.front",), "camera-secret", "camera-secret"),
+            ("get_calendars", (), ["calendar-secret"], "calendar-secret"),
+            ("get_calendar_events", ("calendar.home", "2026-01-01T00:00:00Z", "2026-01-02T00:00:00Z"), {}, "calendar-event-secret"),
+            ("render_template", ("{{ value }}",), {}, "template-secret"),
+            ("check_config", (), [], "check-secret"),
+            ("handle_intent", ("SetTimer",), [], "intent-secret"),
+        )
+        for method_name, args, response, secret in cases:
+            with self.subTest(method=method_name):
+                self.request.return_value = response
+                with self.assertRaises(ResponseError) as caught:
+                    getattr(self.client, method_name)(*args)
+                self.assertNotIn(secret, str(caught.exception))
+
+        self.request.return_value = ["state-item-secret"]
+        with self.assertRaises(ResponseError):
+            self.client.get_states()
+
+        self.request.return_value = ["service-item-secret"]
+        with self.assertRaises(ResponseError):
+            self.client.call_service("light", "turn_on")
+
+        self.request.return_value = []
+        with self.assertRaises(ResponseError):
+            self.client.call_service("weather", "get_forecasts", return_response=True)
 
 
 if __name__ == "__main__":
