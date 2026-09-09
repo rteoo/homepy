@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import http.client
 import json
+import socket
 import ssl
 from typing import Any, Mapping
 from urllib.parse import unquote, urlencode
@@ -15,6 +16,10 @@ from .exceptions import APIError, AuthenticationError, NotFoundError, ResponseEr
 MAX_RESPONSE_BYTES = 16 * 1024 * 1024
 _CHUNK_SIZE = 64 * 1024
 # ceiling: responses are capped at 16 MiB until streaming is added to the API.
+
+
+def _reject_json_constant(_value: str) -> None:
+    raise ValueError
 
 
 class Transport:
@@ -53,7 +58,8 @@ class Transport:
             return None, None
         if isinstance(data, (dict, list, tuple, int, float, bool)):
             try:
-                return json.dumps(data, separators=(",", ":"), allow_nan=False), "application/json"
+                body = json.dumps(data, separators=(",", ":"), ensure_ascii=False, allow_nan=False)
+                return body.encode("utf-8"), "application/json; charset=utf-8"
             except (TypeError, ValueError):
                 raise ValueError("request data is not JSON serializable") from None
         if isinstance(data, (bytes, bytearray, memoryview)):
@@ -66,11 +72,15 @@ class Transport:
         # timeout: this is the socket connect/read timeout, not a whole-request deadline.
         kwargs = {"timeout": self.config.timeout}
         if self.config._scheme == "https":
-            context = (
-                ssl.create_default_context(cafile=self.config.ca_file)
-                if self.config.verify_ssl
-                else ssl._create_unverified_context()
-            )
+            try:
+                if self.config.verify_ssl:
+                    context = ssl.create_default_context(cafile=self.config.ca_file)
+                else:
+                    context = ssl.SSLContext(ssl.PROTOCOL_TLS_CLIENT)
+                    context.check_hostname = False
+                    context.verify_mode = ssl.CERT_NONE
+            except (OSError, ValueError):
+                raise TransportError(category="tls") from None
             return http.client.HTTPSConnection(self.config._hostname, self.config.effective_port, context=context, **kwargs)
         return http.client.HTTPConnection(self.config._hostname, self.config.effective_port, **kwargs)
 
@@ -127,9 +137,11 @@ class Transport:
             if query:
                 request_path += "?" + query
         body, content_type = self._body(data)
-        headers = {"Authorization": f"Bearer {self.config.token}", "Accept": "application/json"}
+        accept = {"json": "application/json", "text": "text/plain", "bytes": "application/octet-stream"}[response_type]
+        headers = {"Authorization": f"Bearer {self.config.token}", "Accept": accept}
         if content_type:
             headers["Content-Type"] = content_type
+        connection = None
         try:
             connection = self._connection()
             connection.request(method, request_path, body=body, headers=headers)
@@ -138,10 +150,20 @@ class Transport:
             status = response.status
         except ResponseError:
             raise
-        except (OSError, ValueError, TimeoutError, ssl.SSLError, http.client.HTTPException):
-            raise TransportError("Home Assistant request failed") from None
+        except TransportError:
+            raise
+        except socket.gaierror:
+            raise TransportError(category="dns") from None
+        except ConnectionRefusedError:
+            raise TransportError(category="refused") from None
+        except TimeoutError:
+            raise TransportError(category="timeout") from None
+        except ssl.SSLError:
+            raise TransportError(category="tls") from None
+        except (OSError, http.client.HTTPException):
+            raise TransportError(category="network") from None
         finally:
-            if "connection" in locals():
+            if connection is not None:
                 try:
                     connection.close()
                 except OSError:
@@ -161,6 +183,6 @@ class Transport:
         if response_type == "text":
             return text
         try:
-            return json.loads(text, parse_constant=lambda _value: (_ for _ in ()).throw(ValueError()))
+            return json.loads(text, parse_constant=_reject_json_constant)
         except (json.JSONDecodeError, UnicodeDecodeError, ValueError):
             raise ResponseError("response was not valid JSON") from None

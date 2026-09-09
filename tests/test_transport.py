@@ -1,6 +1,8 @@
 import json
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
+import socket
 import threading
+import traceback
 import unittest
 from unittest.mock import patch
 
@@ -12,6 +14,7 @@ from homepy.exceptions import (
     NotFoundError,
     ResponseError,
     TransportError,
+    error_details,
 )
 from homepy.transport import MAX_RESPONSE_BYTES, Transport
 
@@ -21,7 +24,9 @@ class _Handler(BaseHTTPRequestHandler):
     mode = "ok"
 
     def do_GET(self):
-        self.__class__.requests.append((self.path, self.headers.get("Authorization")))
+        self.__class__.requests.append(
+            (self.path, self.headers.get("Authorization"), self.headers.get("Accept"))
+        )
         if self.path.endswith("/auth"):
             self.send_response(401)
             self.end_headers()
@@ -64,7 +69,15 @@ class _Handler(BaseHTTPRequestHandler):
     def do_POST(self):
         length = int(self.headers.get("Content-Length", "0"))
         body = self.rfile.read(length)
-        self.__class__.requests.append((self.path, self.headers.get("Authorization"), body))
+        self.__class__.requests.append(
+            (
+                self.path,
+                self.headers.get("Authorization"),
+                self.headers.get("Accept"),
+                self.headers.get("Content-Type"),
+                body,
+            )
+        )
         self.send_response(200)
         result = json.dumps({"received": json.loads(body)}).encode()
         self.send_header("Content-Length", str(len(result)))
@@ -116,14 +129,19 @@ class TransportTests(unittest.TestCase):
     def test_wire_json_text_bytes_and_query(self):
         transport = Transport(self.config())
         self.assertEqual(transport.request("GET", "states", params={"a": "b"}), {"ok": True})
+        self.assertEqual(_Handler.requests[-1][2], "application/json")
         self.assertEqual(transport.request("GET", "text", response_type="text"), "hello")
+        self.assertEqual(_Handler.requests[-1][2], "text/plain")
         self.assertEqual(transport.request("GET", "text", response_type="bytes"), b"hello")
+        self.assertEqual(_Handler.requests[-1][2], "application/octet-stream")
         self.assertEqual(_Handler.requests[-3][0], "/proxy/api/states?a=b")
 
     def test_json_body_and_bearer(self):
-        result = Transport(self.config()).request("POST", "states", data={"x": 1})
-        self.assertEqual(result, {"received": {"x": 1}})
+        result = Transport(self.config()).request("POST", "states", data={"x": 1, "café": "😀"})
+        self.assertEqual(result, {"received": {"x": 1, "café": "😀"}})
         self.assertEqual(_Handler.requests[-1][1], "Bearer secret")
+        self.assertEqual(_Handler.requests[-1][3], "application/json; charset=utf-8")
+        self.assertIn("café".encode("utf-8"), _Handler.requests[-1][4])
 
     def test_safe_path_validation(self):
         transport = Transport(self.config())
@@ -155,6 +173,56 @@ class TransportTests(unittest.TestCase):
         with self.assertRaises(TransportError) as caught:
             Transport(config).request("GET", "states")
         self.assertNotIn("missing", str(caught.exception))
+        self.assertEqual(caught.exception.category, "tls")
+        self.assertEqual(error_details(caught.exception)["category"], "tls")
+
+    def test_transport_categories_are_stable_and_sanitized(self):
+        failures = (
+            (socket.gaierror("secret-dns"), "dns"),
+            (ConnectionRefusedError("secret-refused"), "refused"),
+            (TimeoutError("secret-timeout"), "timeout"),
+            (socket.timeout("secret-timeout"), "timeout"),
+            (OSError("secret-network"), "network"),
+        )
+        transport = Transport(self.config())
+        for failure, category in failures:
+            with self.subTest(category=category), patch.object(Transport, "_connection", side_effect=failure):
+                with self.assertRaises(TransportError) as caught:
+                    transport.request("GET", "states")
+                self.assertEqual(caught.exception.category, category)
+                details = error_details(caught.exception)
+                self.assertEqual(details["code"], "transport_error")
+                self.assertEqual(details["category"], category)
+                self.assertNotIn("secret", str(caught.exception))
+                self.assertNotIn("secret", "".join(traceback.format_exception(caught.exception)))
+
+    def test_tls_contexts_use_public_ssl_configuration(self):
+        verified = Transport(ConnectionConfig("x", "https://example.test"))._connection()
+        self.assertTrue(verified._context.check_hostname)
+        self.assertEqual(verified._context.verify_mode, 2)  # ssl.CERT_REQUIRED
+        verified.close()
+        unverified = Transport(ConnectionConfig("x", "https://example.test", verify_ssl=False))._connection()
+        self.assertFalse(unverified._context.check_hostname)
+        self.assertEqual(unverified._context.verify_mode, 0)  # ssl.CERT_NONE
+        unverified.close()
+
+    def test_error_details_preserves_public_codes_and_status(self):
+        expected = {
+            AuthenticationError(status_code=403): "authentication_error",
+            NotFoundError(): "not_found",
+            APIError("ignored", status_code=500): "api_error",
+            ResponseError("ignored"): "response_error",
+            ConfigurationError("ignored"): "configuration_error",
+            TransportError(category="dns"): "transport_error",
+            Exception("secret"): "request_failed",
+        }
+        for error, code in expected.items():
+            with self.subTest(code=code):
+                details = error_details(error)
+                self.assertEqual(details["code"], code)
+                self.assertNotIn("secret", str(details))
+        self.assertEqual(error_details(AuthenticationError(status_code=403))["status_code"], 403)
+        self.assertEqual(error_details(APIError("ignored", status_code=500))["status_code"], 500)
 
     def test_network_failure_is_safe(self):
         config = ConnectionConfig("top-secret", "http://127.0.0.1", port=1, timeout=0.2)
