@@ -50,6 +50,22 @@ class ResponseError(TransportError):
     """The server response could not be safely consumed or decoded."""
 
 
+class WebSocketAuthenticationError(HomeAssistantError):
+    """Authentication failed after the HTTP upgrade; no HTTP status is implied."""
+
+    def __init__(self) -> None:
+        super().__init__("Home Assistant WebSocket authentication failed")
+
+
+class WebSocketCommandError(HomeAssistantError):
+    """A WebSocket command failed with a sanitized protocol error code."""
+
+    def __init__(self, command_code: str = "unknown_error") -> None:
+        allowed = {"unknown_command", "unauthorized", "invalid_format", "unknown_error"}
+        self.command_code = command_code if isinstance(command_code, str) and command_code in allowed else "unknown_error"
+        super().__init__("Home Assistant WebSocket command failed")
+
+
 _TRANSPORT_MESSAGES = {
     "dns": "Home Assistant hostname could not be resolved",
     "refused": "Home Assistant connection was refused",
@@ -74,6 +90,14 @@ def error_details(exc: Exception) -> dict[str, str | int]:
     status codes. Exception text, request data, URLs, and credentials never
     cross this boundary.
     """
+    if isinstance(exc, WebSocketAuthenticationError):
+        return {"code": "authentication_error", "message": "Home Assistant authentication failed"}
+    if isinstance(exc, WebSocketCommandError):
+        return {
+            "code": "websocket_command_error",
+            "message": "Home Assistant WebSocket command failed",
+            "command_code": exc.command_code,
+        }
     if isinstance(exc, AuthenticationError):
         return {
             "code": "authentication_error",
@@ -117,5 +141,7 @@ __all__ = [
     "NotFoundError",
     "ResponseError",
     "TransportError",
+    "WebSocketAuthenticationError",
+    "WebSocketCommandError",
     "error_details",
 ]

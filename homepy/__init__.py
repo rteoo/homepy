@@ -1,7 +1,8 @@
-"""Home Assistant REST client."""
+"""Dependency-free Home Assistant REST and WebSocket client."""
 
 from .client import HomeAssistant
 from .config import ConnectionConfig
+from .events import EventStream
 from .exceptions import (
     APIError,
     AuthenticationError,
@@ -10,6 +11,8 @@ from .exceptions import (
     NotFoundError,
     ResponseError,
     TransportError,
+    WebSocketAuthenticationError,
+    WebSocketCommandError,
 )
 
 __all__ = [
@@ -17,9 +20,12 @@ __all__ = [
     "AuthenticationError",
     "ConfigurationError",
     "ConnectionConfig",
+    "EventStream",
     "HomeAssistant",
     "HomeAssistantError",
     "NotFoundError",
     "ResponseError",
     "TransportError",
+    "WebSocketAuthenticationError",
+    "WebSocketCommandError",
 ]
