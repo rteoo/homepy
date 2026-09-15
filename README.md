@@ -1,55 +1,75 @@
 # Homepy
 
-A Python client for Home Assistant's REST and WebSocket APIs, with JSON tools that other agents
-can call. Python 3.11 or later; no third-party runtime dependencies.
+<p align="center">
+  A dependency-free Python client for Home Assistant, with REST and WebSocket
+  access plus explicit JSON tools for agents.
+</p>
 
-It reads entities and available services, calls device actions, retrieves history,
-calendars and camera snapshots, renders templates, and handles intents. Unknown
-integration-specific fields remain available in the returned dictionaries.
+<p align="center">
+  <a href="https://github.com/rteoo/homepy/actions/workflows/tests.yml"><img src="https://github.com/rteoo/homepy/actions/workflows/tests.yml/badge.svg" alt="CI status"></a>
+  <a href="https://img.shields.io/badge/python-3.11%2B-3776AB.svg"><img src="https://img.shields.io/badge/python-3.11%2B-3776AB.svg" alt="Python 3.11 or later"></a>
+  <a href="LICENSE"><img src="https://img.shields.io/badge/license-MIT-blue.svg" alt="MIT license"></a>
+</p>
 
-## Install
+Homepy is a synchronous wrapper for Home Assistant's REST API and selected
+WebSocket capabilities. It returns JSON-compatible data for states, services,
+registries, events, calendars, history, templates, intents, and Conversation.
+Runtime code uses only Python's standard library; no third-party runtime
+dependencies are required.
 
-From the repository root, install into the Python environment used by your agent:
+## Highlights
+
+- REST access to entity states, services, history, logbook, calendars, cameras,
+  templates, configuration checks, events, intents, and Conversation.
+- Dependency-free RFC 6455 WebSocket support for area, device, and entity-registry
+  discovery plus bounded event observation.
+- Framework-neutral JSON function definitions and dispatch for agent runtimes.
+- Explicit action policy: service calls are disabled by default and can be
+  restricted to an exact service allowlist.
+- TLS verification, custom CA support, bounded responses, safe errors, disabled
+  redirects, ignored ambient proxies, and no automatic mutation retries.
+- Preserves unknown fields inside valid Home Assistant responses.
+- Python 3.11 or later, with no live Home Assistant or household data required
+  for local testing.
+
+## Quick start
+
+Clone the repository and install it into the Python environment used by your
+application or agent:
 
 ```powershell
+git clone https://github.com/rteoo/homepy.git
+cd homepy
+python -m venv .venv
+.venv\Scripts\Activate.ps1
 python -m pip install .
 ```
 
-Alternatively, install a built wheel without downloading dependencies:
+Homepy also supports editable installs during development:
 
 ```powershell
-python -m pip install --no-index --no-deps ./dist/homepy-0.2.0-py3-none-any.whl
+python -m pip install -e .
 ```
 
-Source builds use [setuptools 77 or later](https://setuptools.pypa.io/en/latest/userguide/pyproject_config.html).
-The installed package has no runtime
-dependencies. Both `homepy` and `python -m homepy` provide the JSON CLI after
-installation. These commands install this local project, not a PyPI package
-with a matching name.
+Create a long-lived access token in your Home Assistant profile and provide it
+through a secret manager or environment variable. Never put a real token in
+source code, tool arguments, shell command arguments, or a committed file.
+Homepy does not read `.env` files automatically.
+
+```powershell
+$env:HA_TOKEN = "<token supplied by your secret manager>"
+python -m homepy health
+python -m homepy states --domain light
+```
+
+There is no token command-line option. The `homepy` console command and
+`python -m homepy` are both available after installation.
 
 ## Connect
 
-Create a long-lived access token in your Home Assistant profile and supply it as
-`HA_TOKEN` through your agent's secret manager or environment. Never put a real
-token in source code, tool arguments, shell command arguments, or a committed file.
-Homepy does not read `.env` files automatically.
-
-From this checkout, Python can import `homepy` directly:
-
-```python
-from homepy import HomeAssistant
-
-ha = HomeAssistant.from_env()
-print(ha.health())
-lights = ha.get_states(domain="light")
-services = ha.get_services()
-```
-
-After installation, the same imports work from any directory in that Python
-environment. Source-only use is also supported by adding this checkout's root
-directory to the agent's `PYTHONPATH`.
-
-Without a host setting, Homepy connects to `http://homeassistant.local:8123`.
+Without a host setting, Homepy connects to
+`http://homeassistant.local:8123`. Configure the connection with environment
+variables or constructor arguments:
 
 | Setting | Purpose | Default |
 | --- | --- | --- |
@@ -58,83 +78,92 @@ Without a host setting, Homepy connects to `http://homeassistant.local:8123`.
 | `HA_HOST` | Hostname, IPv4, or bracketed IPv6 address | `homeassistant.local` |
 | `HA_PORT` | Override the connection port | 8123 for a bare host |
 | `HA_TIMEOUT` | Socket timeout in seconds | 10 |
-| `HA_CA_FILE` | Custom certificate authority file for HTTPS | System trust |
-
-Connection examples (token already supplied securely):
+| `HA_CA_FILE` | Custom CA file for HTTPS | System trust store |
 
 ```python
 import os
+
 from homepy import HomeAssistant
 
 token = os.environ["HA_TOKEN"]
-local = HomeAssistant(token)                              # homeassistant.local:8123
-lan = HomeAssistant(token, host="192.168.1.50")            # HTTP :8123
-tailnet = HomeAssistant(token, host="100.101.102.103")      # HTTP :8123
-magic_dns = HomeAssistant(token, host="homeassistant")     # HTTP :8123
-https = HomeAssistant(token, host="https://ha.example.ts.net")  # HTTPS :443
-custom = HomeAssistant(token, host="192.168.1.50", port=8124)
-ipv6 = HomeAssistant(token, host="[fd7a:115c:a1e0::1234]")
+ha = HomeAssistant(token, host="homeassistant.local")
+print(ha.health())
+
+lan = HomeAssistant(token, host="192.168.1.50")
+tailnet = HomeAssistant(token, host="100.101.102.103")
+https = HomeAssistant(token, host="https://ha.example.ts.net")
+custom_port = HomeAssistant(token, host="192.168.1.50", port=8124)
 ```
 
-A full URL uses its explicit port or the normal scheme port (HTTP 80, HTTPS 443).
-Include `:8123` in a full URL when needed. Reverse-proxy path prefixes work, and
-a trailing `/api` is accepted. The wrapper retains the requested bare-host default
-of 8123; set the actual port if your installation differs.
+Full URLs retain their scheme and explicit port. A bare host uses HTTP port
+8123. Use a reachable LAN address, Tailscale IP, MagicDNS hostname, or existing
+HTTPS endpoint; Tailscale must already provide routing and does not replace
+Home Assistant authentication.
 
-For a typical local setup, use `HA_HOST=homeassistant.local` or
-`HA_URL=http://homeassistant.local:8123`. Setting
-`HA_URL=http://homeassistant.local` selects port 80.
+Reverse-proxy path prefixes are supported, and a trailing `/api` is accepted.
+For a full URL without an explicit port, the normal scheme port is used: HTTP
+80 or HTTPS 443.
 
-Tailscale must already provide connectivity from the machine running the agent
-to Home Assistant, directly or through a subnet router. Use the reachable
-Tailscale IP, MagicDNS hostname, or existing HTTPS endpoint. Homepy does not set up
-Tailscale, change its access rules, or replace Home Assistant authentication.
+## Read Home Assistant
+
+The client exposes direct Python methods that return Home Assistant data without
+discarding integration-specific fields:
+
+```python
+from homepy import HomeAssistant
+
+ha = HomeAssistant.from_env()
+
+states = ha.get_states(domain="light")
+one_state = ha.get_state("light.desk")
+services = ha.get_services()
+areas = ha.get_areas()
+devices = ha.get_devices()
+entities = ha.get_entity_registry()
+```
+
+History requires a nonempty list of entity IDs. Timestamp arguments accept
+timezone-aware Python `datetime` values or ISO strings with an explicit
+timezone. Availability and permissions depend on the integrations enabled in
+your Home Assistant instance and the token user.
 
 ## Control devices
 
-Discover entities with `get_states()` and service fields with `get_services()`
-before choosing an action. Service and entity availability depends on the
-integrations enabled in your instance.
+Discover states and services before choosing an action:
 
 ```python
 ha.call_service(
-    "light", "turn_on",
+    "light",
+    "turn_on",
     {"brightness_pct": 40},
     target={"entity_id": "light.desk"},
 )
 
 ha.call_service("scene", "turn_on", target={"entity_id": "scene.evening"})
-ha.call_service("script", "turn_on", target={"entity_id": "script.bedtime"})
-ha.call_service(
-    "climate", "set_temperature",
-    {"temperature": 23},
-    target={"entity_id": "climate.living_room"},
-)
 
 forecast = ha.call_service(
-    "weather", "get_forecasts",
+    "weather",
+    "get_forecasts",
     {"type": "daily"},
     target={"entity_id": "weather.home"},
     return_response=True,
 )
 ```
 
-`target` accepts entity, device, area, floor, and label selectors. The wrapper puts
-these selectors at the top level of the REST service body. Duplicate selectors
-between `target` and `service_data` are rejected rather than overwritten.
-
-Use `return_response=True` only for a service that supports or requires response
-data. The ordinary result is a list of changed states; with response data it is
-an object containing `changed_states` and `service_response`. A changed-state
-list can include unrelated concurrent changes. Read the target state again when
-your workflow needs confirmation of its final state.
+`target` accepts entity, device, area, floor, and label selectors. These are
+placed at the top level of the REST service body; duplicate selectors are
+rejected rather than overwritten.
 
 **`set_state()` does not operate a physical device.** It changes the state
 representation held by Home Assistant. Use `call_service()` for device control.
-The Python client permits mutations directly; the agent adapter adds an explicit
-capability policy for whichever functions you choose to expose.
+The ordinary service-call result is a list of changed states; with
+`return_response=True`, it also includes service response data. Read the target
+state again when your workflow needs confirmation of its final state.
 
 ## Use from an agent
+
+`AgentTools` exposes a narrow, framework-neutral set of JSON function
+descriptors:
 
 ```python
 from homepy import HomeAssistant
@@ -145,26 +174,23 @@ agent = AgentTools(
     ha,
     allow_actions=True,
     allowed_services={"light.turn_on", "light.turn_off", "scene.turn_on"},
+    include_discovery=True,
 )
 
-tool_definitions = agent.tools  # Pass these Chat Completions-style descriptors to your framework.
+tool_definitions = agent.tools
 result = agent.dispatch("ha_get_state", {"entity_id": "light.desk"})
 ```
 
-The adapter supplies function-tool JSON definitions and validates incoming
-arguments before dispatch. It exposes entity discovery, a single entity's state,
-service discovery, and service calls. With the default `allow_actions=False`,
-the service-call tool is neither advertised nor callable. An empty
-`allowed_services` collection allows no services; `None` permits any service
-when actions are enabled.
+The default `allow_actions=False` hides and denies the service-call tool. An
+empty `allowed_services` collection denies every service; `None` permits any
+service only when actions are explicitly enabled. Discovery and event tools are
+also opt-in with `include_discovery=True` and `include_events=True`.
 
-The allowlist limits service names, not individual entities or service payloads.
-Your agent orchestrator remains responsible for user authorization and choosing
-permitted targets. Tool schemas and the adapter are not a security sandbox.
-Read results can contain private household data; send them only to approved
-destinations.
+The allowlist limits service names, not individual entities or payloads. The
+agent orchestrator remains responsible for user authorization and target
+selection; tool schemas are not a security sandbox.
 
-For asynchronous agent runtimes, run synchronous client calls in a worker thread:
+For asynchronous runtimes, run synchronous calls in a worker thread:
 
 ```python
 import asyncio
@@ -172,182 +198,137 @@ import asyncio
 state = await asyncio.to_thread(ha.get_state, "light.desk")
 ```
 
-Cancelling the coroutine does not cancel a request already running in that
-thread, and does not undo a device action.
+Cancelling that coroutine does not cancel a request already running in the
+worker thread or undo a device action.
 
 ## JSON command line
 
-With `HA_TOKEN` set securely, run these in the installed environment or from the
-checkout:
+All commands write JSON. Successful output goes to stdout; failures go to
+stderr and use a nonzero exit status.
 
 ```powershell
 python -m homepy health
 python -m homepy states --domain light
 python -m homepy state light.desk
 python -m homepy services
+python -m homepy areas
+python -m homepy devices
+python -m homepy entity-registry
 python -m homepy tools
 python -m homepy --host 100.101.102.103 health
 python -m homepy call light turn_on --target '{"entity_id":"light.desk"}' --allow-actions
 python -m homepy tool ha_get_state --arguments '{"entity_id":"light.desk"}'
 ```
 
-Successful commands write JSON to stdout. Failures write JSON to stderr and use a
-nonzero exit status. There is no token command-line option. `call` and mutating
-`tool` invocations need `--allow-actions`. Use `--help` on a command for its full
-options.
+`python -m homepy tools` lists tool schemas without a token or network
+connection. Add `--allowed-service DOMAIN.SERVICE` repeatedly to restrict an
+enabled action tool. Use `--help` on a command for all options.
 
-`python -m homepy tools` lists the tool schemas without a token or network
-connection. `--allowed-service DOMAIN.SERVICE` can be repeated on `call` and
-`tool` invocations to restrict the enabled action tool.
-Omitting that option permits any service only when `--allow-actions` is enabled.
-To deny every action from the CLI, omit `--allow-actions`.
+## Events and Conversation
 
-## REST surface
-
-| Methods | Purpose |
-| --- | --- |
-| `health`, `get_config`, `get_components` | Availability and configuration |
-| `get_states`, `get_state` | Current entities and states |
-| `set_state`, `delete_state` | State representation creation/update/removal |
-| `get_services`, `call_service` | Discover and invoke integration actions |
-| `get_events`, `fire_event` | Event listener discovery and event firing |
-| `get_history`, `get_logbook` | Recorded state changes and activity |
-| `get_error_log` | Current Home Assistant error log as text |
-| `get_camera_image` | Snapshot bytes |
-| `get_calendars`, `get_calendar_events` | Calendars and events |
-| `render_template` | Home Assistant template output as text |
-| `check_config` | Validate Home Assistant configuration |
-| `handle_intent` | Execute an intent through the intent integration |
-| `process_conversation` | Submit text to Conversation/Assist |
-
-History takes a nonempty list of entity IDs. Timestamp arguments accept aware
-Python `datetime` values or ISO strings with a timezone. Endpoint availability
-and permissions depend on Home Assistant's installed integrations and token user.
-
-## Capability extensions
-
-Homepy 0.2.0 provides dependency-free, synchronous WebSocket capabilities alongside
-the REST client. `get_areas()`, `get_devices()`, and `get_entity_registry()`
-return the authenticated user's registry records, preserving unknown fields.
-The CLI exposes them as `areas`, `devices`, and `entity-registry`; agent schemas
-are opt-in with `include_discovery=True` or `--include-discovery`.
+WebSocket registry reads and event observation use separate connections. Event
+streams are finite, closeable, and bounded:
 
 ```python
-areas = ha.get_areas()
-devices = ha.get_devices()
-registered_entities = ha.get_entity_registry()
-
 with ha.watch_events("state_changed", max_events=10, duration=15) as events:
     for event in events:
         print(event)
+
 print(events.stop_reason)  # max_events, duration, or closed
 ```
 
-`watch_events(event_type, *, max_events=100, duration=30)` returns a closeable
-`EventStream`. The CLI `watch` command emits one event per flushed NDJSON line;
-`--event-type` is required and the count/duration defaults are 100 and 30.
-Ctrl-C closes the stream and exits 130. Streams use one connection, bounded
-setup and observation budgets, a 16 MiB message and cumulative event-payload
-limit and a one-second cleanup allowance. They do not retry,
-redirect, use ambient proxies or compression, reconnect, or promise gap-free
-delivery. OS DNS resolution may exceed an application deadline.
-
-Use the context manager when you might stop iteration early. Python callers can
-set either limit to `None`, but must retain at least one. Agent collection is
-opt-in with `include_events=True` and always caps observations at 100 events and
-30 seconds. Registry reads use separate connections and do not form an atomic
-snapshot. A registered entity need not have a current state.
-An entity can have its own area assignment that differs from its device's area;
-callers must resolve those relationships deliberately.
+`watch_events()` uses one connection, a 16 MiB message limit, a cumulative event
+payload limit, and a one-second cleanup allowance. It does not reconnect,
+retry, redirect, use ambient proxies or compression, or promise gap-free
+delivery. The CLI emits one flushed NDJSON event per line:
 
 ```powershell
-python -m homepy areas
 python -m homepy watch --event-type state_changed --max-events 10 --duration 15
 python -m homepy tools --include-discovery --include-events
 python -m homepy tool ha_collect_events --include-events --arguments '{"event_type":"state_changed","duration":5}'
 ```
 
-`process_conversation(text, *, language=None, agent_id=None,
-conversation_id=None)` submits to Home Assistant's Conversation REST API and
-returns its structured response. Agent and CLI conversation access requires both
-`allow_actions` and `allow_conversation`, with no `allowed_services` collection
-(including an empty one). The built-in `home_assistant` agent is selected at
-those boundaries; direct Python callers may provide `agent_id`.
+Python callers may set either event limit to `None`, but at least one limit must
+remain active. Agent event collection is always capped at 100 events and 30
+seconds. A registered entity need not have a current state, and entity and
+device area assignments can differ.
+
+Conversation access is separately authorized:
 
 ```python
 reply = ha.process_conversation("What time is it?", language="en")
-# Preserve the returned conversation_id when continuing the same conversation.
 ```
+
+At the agent and CLI boundaries, Conversation requires both
+`allow_actions`/`--allow-actions` and `allow_conversation`/`--allow-conversation`.
+It cannot be combined with an `allowed_services` collection, including an empty
+one. The built-in `home_assistant` agent is selected at those boundaries;
+direct Python callers may provide `agent_id`.
 
 ```powershell
 python -m homepy conversation --text "What time is it?" --allow-actions --allow-conversation
 ```
 
-Conversation can operate devices and cannot enforce Homepy's service allowlist.
-An HTTP 200 response may still describe an Assist domain error; that structured
-response is preserved. A timeout leaves the outcome unknown and is never retried.
+An HTTP 200 response can still contain a structured Assist domain error; that
+response is preserved. A timeout leaves the outcome unknown and is never
+retried.
 
-See [MCP compatibility](docs/mcp-compatibility.md) for the native Home Assistant
-MCP/Assist comparison and a placeholder-only verification runbook. No live
-instance or credentials were used for that guide.
+See [MCP compatibility](docs/mcp-compatibility.md) for the boundary between
+Homepy and Home Assistant's native MCP/Assist surfaces.
 
-## Failures and connection behavior
+## API surface
 
-Catch `HomeAssistantError` for client failures. More specific exceptions include
-`ConfigurationError`, `TransportError`, `AuthenticationError`, `NotFoundError`,
-`APIError`, `ResponseError`, `WebSocketAuthenticationError`, and
-`WebSocketCommandError`. HTTP failures expose `status_code`. WebSocket command
-failures expose a sanitized `command_code`; they have no HTTP status. Invalid
-endpoint arguments raise `ValueError` or `TypeError` before a request is sent.
+| Methods | Purpose |
+| --- | --- |
+| `health`, `get_config`, `get_components` | Availability and configuration |
+| `get_states`, `get_state` | Current entity states |
+| `set_state`, `delete_state` | State representation changes |
+| `get_services`, `call_service` | Discover and invoke integration actions |
+| `get_events`, `fire_event` | Event discovery and firing |
+| `get_history`, `get_logbook` | Recorded state changes and activity |
+| `get_error_log`, `get_camera_image` | Error text and camera bytes |
+| `get_calendars`, `get_calendar_events` | Calendars and events |
+| `render_template`, `check_config`, `handle_intent` | Template, config, and intent operations |
+| `get_areas`, `get_devices`, `get_entity_registry` | WebSocket registry discovery |
+| `watch_events`, `process_conversation` | Bounded events and Conversation |
 
-`TransportError.category` distinguishes `dns`, `refused`, `timeout`, `tls`, and
-other `network` failures. CLI errors retain the `transport_error` code and add
-`category` and a safe `hint`; HTTP errors also include `status_code`. These fields
-do not contain the target URL, credentials, or raw server/OS error details.
+## Data safety and limitations
 
-The Python client validates the documented response container types before
-returning data. Unexpected objects, lists, or state entries raise `ResponseError`;
-unknown fields inside otherwise valid responses are preserved.
+- TLS certificate verification is enabled by default; use `ca_file` or
+  `HA_CA_FILE` for a private CA.
+- HTTP redirects are rejected, ambient HTTP proxies are ignored, and failed
+  actions are never retried automatically.
+- Errors omit credentials, request bodies, response bodies, URLs, and raw
+  server/OS details. Response bodies are capped at 16 MiB.
+- If a mutation times out or its response is lost, its outcome is unknown.
+  Check the device state before deciding whether to issue another action.
+- `TransportError.category` distinguishes DNS, refused-connection, timeout, TLS,
+  and other network failures. HTTP errors expose `status_code`.
+- Homepy does not automate browser clicks, edit dashboards or integration
+  registries, or manage Supervisor. Those surfaces need separate clients.
+- Live Home Assistant connectivity, Tailscale routing, household actions, and
+  static type checking are outside the local test suite's verification boundary.
 
-TLS certificate verification is enabled by default. Use `ca_file` or `HA_CA_FILE`
-for a private CA. HTTP redirects are rejected, ambient HTTP proxies are ignored,
-and failed actions are not retried automatically. Errors omit raw response
-bodies, request payloads, URLs, and credentials. If a mutation times out or its
-response is lost, its outcome is unknown: check the device state before deciding
-whether to issue another action.
+## Develop and build
 
-Responses are capped at 16 MiB, including camera snapshots and history. Request a
-smaller history window if that cap is reached. For REST, the timeout bounds socket
-operations, not the total duration of a peer that continuously sends data.
-
-## Scope
-
-This implements the [Home Assistant REST API](https://developers.home-assistant.io/docs/api/rest/)
-and read-only registry/event commands from the
-[WebSocket API](https://developers.home-assistant.io/docs/api/websocket/).
-It controls devices through services available on that API. It does not automate
-browser clicks, edit dashboards or integration registries, or manage Supervisor.
-Those surfaces need separate clients; API coverage does not imply every UI
-administration operation is available.
-
-## Development
+Run the complete local verification gates from the repository root:
 
 ```powershell
 python -m unittest discover -s tests -v
 python -m compileall -q homepy tests
+python -m homepy --help
 ```
 
-With `build` and setuptools already available in your development environment,
-build the source archive and a wheel from that archive:
+Build the source archive and wheel when the existing build tools are available:
 
 ```powershell
 python -m build --no-isolation
 ```
 
-Artifacts are written to `dist/`. The wheel contains the runtime package, its
-`py.typed` marker, license, and metadata; the source archive also includes tests
-and the implementation plan.
+Artifacts are written to `dist/`. Tests use synthetic data and loopback
+HTTP/WebSocket/TLS servers; they do not contact or operate a real Home Assistant
+installation. See [PLAN.md](PLAN.md) for architecture and verification scope.
 
-Tests use fake data and loopback HTTP/WebSocket servers. They do not contact or operate a
-real Home Assistant installation. See [PLAN.md](PLAN.md) for architecture and
-verification scope.
+## License
+
+Homepy is released under the [MIT License](LICENSE).
