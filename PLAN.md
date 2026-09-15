@@ -1,6 +1,7 @@
 # Homepy implementation plan
 
-Build a reusable Python 3.11+ wrapper for Home Assistant's documented REST API.
+Build a reusable Python 3.11+ wrapper for Home Assistant's REST API and selected
+WebSocket capabilities.
 The package uses the standard library at runtime and returns JSON-compatible
 dicts/lists, text for templates/logs, and bytes for camera snapshots.
 
@@ -10,6 +11,8 @@ dicts/lists, text for templates/logs, and bytes for camera snapshots.
   settings, host normalization, bearer authentication, bounded HTTP requests,
   TLS validation, safe errors. No redirects or automatic action retries.
 - `homepy/client.py`: `HomeAssistant` endpoint methods and `from_env()`.
+- `homepy/websocket_transport.py`, `events.py`: standard-library RFC 6455
+  transport, registry requests, and closeable bounded event observations.
 - `homepy/agent.py`, `cli.py`, `__main__.py`: framework-neutral JSON tool
   definitions/dispatch and a CLI. Agent mutations are opt-in and can be limited
   to exact service names.
@@ -54,18 +57,21 @@ timezone-aware datetime objects or ISO strings with an explicit timezone.
 
 The source of truth is https://developers.home-assistant.io/docs/api/rest/ .
 Services operate physical devices; setting state only changes HA's representation.
-WebSocket event streaming, dashboard/registry editing, and Supervisor APIs are
-outside this REST release. Tailscale supplies routing and does not replace the
+WebSocket registry discovery and bounded event streaming are included in the
+0.2.0 capability increment; dashboard/registry editing and Supervisor APIs are
+outside this release. Tailscale supplies routing and does not replace the
 Home Assistant token. No live household actions will be run during development.
 
 Use `python -m unittest discover -s tests -v` and real loopback HTTP tests to prove
 wire behavior, errors, agent dispatch, and CLI operation. Record any live-host
-verification gap. Approved packaging uses setuptools as a build-only dependency
-and installs the built package into a fresh local virtual environment for proof.
-There are no runtime dependencies, pushes, or external mutations. Local task
-commits preserve the implementation and reviewed fixes.
+verification gap. Approved packaging uses setuptools only as a build tool; the
+installed package and all runtime capabilities remain dependency-free. The
+built package is installed into a fresh local virtual environment for proof.
+There are no runtime dependencies or household mutations. Local task commits
+preserve the implementation and reviewed fixes; the authorized delivery workflow
+pushes the task branch and opens a pull request without merging it.
 
-## Delivery status
+## Initial REST delivery (0.1.1)
 
 - Implemented all listed REST methods, connection settings, agent tools, and CLI.
 - Verified 48 tests on Windows Python 3.14.6, including real loopback HTTP,
@@ -100,3 +106,31 @@ commits preserve the implementation and reviewed fixes.
 - Saved the baseline before remediation and retained local review commits on
   `fix/review-correctness`. Optional CI/linter setup and publishing metadata are
   outside these correctness fixes; no new dependency was introduced.
+
+## Capability delivery (0.2.0)
+
+- Implemented `get_areas`, `get_devices`, `get_entity_registry`, `watch_events`,
+  and `process_conversation`, with corresponding CLI and opt-in agent tools.
+  Native MCP boundaries and deferred UI administration are documented in
+  `docs/mcp-compatibility.md`; implementation contracts are in `specs/`.
+- The user's requirement that every installation remain dependency-free replaces
+  the draft optional WebSocket extra. Framing, TLS, authentication, bounded
+  receives, and cleanup use only the standard library. There is no prefetch
+  queue, reconnect, mutation replay, proxy discovery, or compression.
+- Registry command names were verified against released Core 2026.9.1 source.
+  Tests use synthetic loopback HTTP, WebSocket, and TLS peers; the bundled TLS
+  private key belongs solely to the synthetic localhost fixture.
+- 96 tests pass with site packages disabled on Windows Python 3.14.6 and
+  3.12.14. Compileall and CLI help pass. Independent review reproduced and fixed
+  deadline, count-only stream, malformed JSON, and socket cleanup defects.
+- Source and wheel distributions build using existing tooling with no runtime
+  dependency. The wheel includes `py.typed`; the source distribution includes
+  specifications, the MCP guide, tests, and the TLS fixture.
+- Installed the wheel offline into the existing isolated environment and verified
+  metadata, source-byte parity, TLS, agent collection, and both CLI entrypoints
+  from outside the checkout. Installed metadata declares no runtime dependencies.
+- CI covers Python 3.11 and 3.14 on Windows and Linux without installing project
+  dependencies. CI results are reported on the pull request.
+- Live Home Assistant, Tailscale routing, and household actions remain untested.
+  Synchronous OS DNS can exceed the application's WebSocket setup deadline.
+  REST timeouts remain per socket operation. Static type checking was not run.
