@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import argparse
 import json
+import math
 import os
 import sys
 from collections.abc import Mapping, Sequence
@@ -25,12 +26,14 @@ class CLIError(Exception):
         category: str | None = None,
         status_code: int | None = None,
         hint: str | None = None,
+        command_code: str | None = None,
     ) -> None:
         self.code = code
         self.message = message
         self.category = category
         self.status_code = status_code
         self.hint = hint
+        self.command_code = command_code
         super().__init__(message)
 
     @classmethod
@@ -38,12 +41,14 @@ class CLIError(Exception):
         category = details.get("category")
         status_code = details.get("status_code")
         hint = details.get("hint")
+        command_code = details.get("command_code")
         return cls(
             str(details["code"]),
             str(details["message"]),
             category=category if isinstance(category, str) else None,
             status_code=status_code if isinstance(status_code, int) else None,
             hint=hint if isinstance(hint, str) else None,
+            command_code=command_code if isinstance(command_code, str) else None,
         )
 
     def to_details(self) -> dict[str, str | int]:
@@ -54,6 +59,8 @@ class CLIError(Exception):
             details["status_code"] = self.status_code
         if self.hint is not None:
             details["hint"] = self.hint
+        if self.command_code is not None:
+            details["command_code"] = self.command_code
         return details
 
 
@@ -86,6 +93,18 @@ def _add_action_options(parser: argparse.ArgumentParser) -> None:
     )
 
 
+def _add_agent_options(parser: argparse.ArgumentParser) -> None:
+    parser.add_argument("--include-discovery", action="store_true", help="Include registry discovery tools")
+    parser.add_argument("--include-events", action="store_true", help="Include bounded event collection tools")
+    parser.add_argument("--allow-conversation", action="store_true", help="Enable the conversation tool")
+
+
+def _add_event_options(parser: argparse.ArgumentParser) -> None:
+    parser.add_argument("--event-type", required=True, help="Event type to observe")
+    parser.add_argument("--max-events", type=int, default=100, help="Maximum events to emit (default: 100)")
+    parser.add_argument("--duration", type=float, default=30.0, help="Observation duration in seconds (default: 30)")
+
+
 def build_parser() -> argparse.ArgumentParser:
     parser = _ArgumentParser(
         prog="python -m homepy",
@@ -108,6 +127,27 @@ def build_parser() -> argparse.ArgumentParser:
     services = subparsers.add_parser("services", help="List available services")
     _add_connection_options(services, suppressed=True)
 
+    areas = subparsers.add_parser("areas", help="List Home Assistant areas")
+    _add_connection_options(areas, suppressed=True)
+
+    devices = subparsers.add_parser("devices", help="List Home Assistant devices")
+    _add_connection_options(devices, suppressed=True)
+
+    registry = subparsers.add_parser("entity-registry", help="List registered Home Assistant entities")
+    _add_connection_options(registry, suppressed=True)
+
+    watch = subparsers.add_parser("watch", help="Observe a bounded event stream as NDJSON")
+    _add_connection_options(watch, suppressed=True)
+    _add_event_options(watch)
+
+    conversation = subparsers.add_parser("conversation", help="Submit text to Home Assistant Conversation")
+    _add_connection_options(conversation, suppressed=True)
+    conversation.add_argument("--text", required=True, help="Conversation text")
+    conversation.add_argument("--language", help="Input language")
+    conversation.add_argument("--conversation-id", help="Continue an existing conversation")
+    _add_action_options(conversation)
+    conversation.add_argument("--allow-conversation", action="store_true", help="Enable conversation requests")
+
     call = subparsers.add_parser("call", help="Call a Home Assistant service (actions are disabled by default)")
     _add_connection_options(call, suppressed=True)
     call.add_argument("domain", help="Service domain, such as light")
@@ -120,12 +160,14 @@ def build_parser() -> argparse.ArgumentParser:
     tools = subparsers.add_parser("tools", help="List framework-neutral JSON tool definitions")
     _add_connection_options(tools, suppressed=True)
     tools.add_argument("--allow-actions", action="store_true", help="Include the service-call tool")
+    _add_agent_options(tools)
 
     tool = subparsers.add_parser("tool", help="Dispatch one framework-neutral JSON tool")
     _add_connection_options(tool, suppressed=True)
     tool.add_argument("name", help="Tool name")
     tool.add_argument("--arguments", required=True, help="Tool arguments as a JSON object")
     _add_action_options(tool)
+    _add_agent_options(tool)
 
     return parser
 
@@ -182,23 +224,49 @@ def _new_agent_tools(
     *,
     allow_actions: bool = False,
     allowed_services: list[str] | None = None,
+    include_discovery: bool = False,
+    include_events: bool = False,
+    allow_conversation: bool = False,
 ) -> AgentTools:
     try:
         return AgentTools(
             client,
             allow_actions=allow_actions,
             allowed_services=allowed_services,
+            include_discovery=include_discovery,
+            include_events=include_events,
+            allow_conversation=allow_conversation,
         )
     except TypeError:
         raise CLIError("invalid_arguments", "Invalid service policy") from None
 
 
-def _run(args: argparse.Namespace, environ: Mapping[str, str], client_factory: Callable[..., Any]) -> Any:
+def _run(
+    args: argparse.Namespace,
+    environ: Mapping[str, str],
+    client_factory: Callable[..., Any],
+    *,
+    stdout: TextIO | None = None,
+) -> Any:
     # Tool schemas are static and safe to inspect without credentials or a
     # network client.  This makes discovery usable by shell agents before they
     # have an HA connection configured.
     if args.command == "tools":
-        return AgentTools(object(), allow_actions=args.allow_actions).tool_definitions()
+        _validate_agent_policy(args)
+        return AgentTools(
+            object(),
+            allow_actions=args.allow_actions,
+            include_discovery=args.include_discovery,
+            include_events=args.include_events,
+            allow_conversation=args.allow_conversation,
+        ).tool_definitions()
+
+    if args.command == "watch":
+        _validate_event_limits(args.max_events, args.duration)
+        return _run_watch(args, environ, client_factory, stdout=stdout)
+
+    if args.command in {"conversation", "tool"}:
+        _validate_agent_policy(args)
 
     client = _make_client(args, environ, client_factory)
 
@@ -215,6 +283,27 @@ def _run(args: argparse.Namespace, environ: Mapping[str, str], client_factory: C
 
     if args.command == "services":
         return _new_agent_tools(client).dispatch("ha_get_services", {})
+
+    if args.command in {"areas", "devices", "entity-registry"}:
+        name = {
+            "areas": "ha_get_areas",
+            "devices": "ha_get_devices",
+            "entity-registry": "ha_get_entity_registry",
+        }[args.command]
+        return _new_agent_tools(client, include_discovery=True).dispatch(name, {})
+
+    if args.command == "conversation":
+        arguments: dict[str, Any] = {"text": args.text}
+        if args.language is not None:
+            arguments["language"] = args.language
+        if args.conversation_id is not None:
+            arguments["conversation_id"] = args.conversation_id
+        return _new_agent_tools(
+            client,
+            allow_actions=args.allow_actions,
+            allowed_services=args.allowed_service,
+            allow_conversation=args.allow_conversation,
+        ).dispatch("ha_process_conversation", arguments)
 
     if args.command == "call":
         arguments: dict[str, Any] = {"domain": args.domain, "service": args.service}
@@ -242,9 +331,75 @@ def _run(args: argparse.Namespace, environ: Mapping[str, str], client_factory: C
             client,
             allow_actions=args.allow_actions,
             allowed_services=args.allowed_service,
+            include_discovery=args.include_discovery,
+            include_events=args.include_events,
+            allow_conversation=args.allow_conversation,
         ).dispatch(args.name, arguments)
 
     raise CLIError("invalid_arguments", "Unknown command")
+
+
+def _validate_agent_policy(args: argparse.Namespace) -> None:
+    """Reject conversational policy conflicts before constructing a client."""
+
+    if getattr(args, "allow_conversation", False) and (
+        not getattr(args, "allow_actions", False)
+        or getattr(args, "allowed_service", None) is not None
+    ):
+        raise CLIError(
+            "conversation_policy",
+            "Conversation requires --allow-actions and no --allowed-service",
+        )
+
+
+def _validate_event_limits(max_events: Any, duration: Any) -> None:
+    if type(max_events) is not int or max_events <= 0:
+        raise CLIError("invalid_arguments", "--max-events must be a positive integer")
+    if isinstance(duration, bool) or not isinstance(duration, (int, float)):
+        raise CLIError("invalid_arguments", "--duration must be finite and greater than zero")
+    if duration <= 0 or not math.isfinite(duration):
+        raise CLIError("invalid_arguments", "--duration must be finite and greater than zero")
+
+
+def _run_watch(
+    args: argparse.Namespace,
+    environ: Mapping[str, str],
+    client_factory: Callable[..., Any],
+    *,
+    stdout: TextIO | None = None,
+) -> int:
+    """Emit a bounded public event stream as flushed JSON lines."""
+
+    client = _make_client(args, environ, client_factory)
+    out = stdout if stdout is not None else sys.stdout
+    stream = None
+    try:
+        stream = client.watch_events(
+            args.event_type, max_events=args.max_events, duration=args.duration
+        )
+        with stream as active:
+            for event in active:
+                _write_json(out, event)
+                out.flush()
+        return 0
+    except KeyboardInterrupt:
+        if stream is not None:
+            try:
+                stream.close()
+            except Exception:
+                pass
+        return 130
+    except BrokenPipeError:
+        if stream is not None:
+            try:
+                stream.close()
+            except Exception:
+                pass
+        return 1
+    except CLIError:
+        raise
+    except Exception as exc:
+        raise CLIError.from_details(error_details(exc)) from None
 
 
 def _safe_client_call(client: Any, method_name: str) -> Any:
@@ -293,7 +448,9 @@ def main(
     factory = client_factory if client_factory is not None else _default_client_factory
     try:
         args = build_parser().parse_args(list(argv) if argv is not None else None)
-        result = _run(args, env, factory)
+        result = _run(args, env, factory, stdout=out)
+        if args.command == "watch":
+            return int(result)
         _write_json(out, result)
         return 0
     except (CLIError, AgentToolError) as exc:
