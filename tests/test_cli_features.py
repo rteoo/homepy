@@ -299,6 +299,8 @@ class CLIFeatureTests(unittest.TestCase):
         assert process.stderr is not None
         stderr = process.stderr.read()
         process.stderr.close()
+        self.assertEqual(process.returncode, 1, stderr)
+        self.assertEqual(stderr, b"")
         self.assertNotIn(b"BrokenPipeError", stderr)
         self.assertNotIn(b"Traceback", stderr)
 

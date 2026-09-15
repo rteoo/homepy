@@ -379,8 +379,20 @@ def _run_watch(
         )
         with stream as active:
             for event in active:
-                _write_json(out, event)
-                out.flush()
+                try:
+                    _write_json(out, event)
+                    out.flush()
+                except OSError:
+                    # Closed pipes surface as EPIPE on POSIX and may be EINVAL
+                    # on Windows. Prevent Python's exit-time flush from failing
+                    # again; the context manager still releases the subscription.
+                    if out is sys.stdout:
+                        try:
+                            with open(os.devnull, "wb") as sink:
+                                os.dup2(sink.fileno(), out.fileno())
+                        except (OSError, ValueError):
+                            pass
+                    return 1
         return 0
     except KeyboardInterrupt:
         if stream is not None:
@@ -389,13 +401,6 @@ def _run_watch(
             except Exception:
                 pass
         return 130
-    except BrokenPipeError:
-        if stream is not None:
-            try:
-                stream.close()
-            except Exception:
-                pass
-        return 1
     except CLIError:
         raise
     except Exception as exc:
