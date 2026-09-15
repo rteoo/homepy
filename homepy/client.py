@@ -4,12 +4,15 @@ from __future__ import annotations
 
 from collections.abc import Iterable, Mapping
 from datetime import datetime
-from typing import Any, Self, cast
+from typing import TYPE_CHECKING, Any, Self, cast
 from urllib.parse import quote
 
 from .config import ConnectionConfig
 from .exceptions import ResponseError
 from .transport import Transport
+
+if TYPE_CHECKING:
+    from .events import EventStream
 
 
 JSONValue = Any
@@ -212,6 +215,35 @@ class HomeAssistant:
         """Return registered services."""
         return _object_list_response(self._request("GET", "services"), "services")
 
+    def _registry(self, registry: str, identity: str) -> list[dict[str, Any]]:
+        from .websocket_transport import WebSocketTransport
+
+        result = WebSocketTransport(self.config).request(f"config/{registry}/list")
+        entries = _object_list_response(result, "registry")
+        if any(not isinstance(entry.get(identity), str) or not entry[identity] for entry in entries):
+            raise ResponseError("Home Assistant registry response contains an invalid identity")
+        return entries
+
+    def get_areas(self) -> list[dict[str, Any]]:
+        """Return area registry records, retaining unknown fields."""
+        return self._registry("area_registry", "area_id")
+
+    def get_devices(self) -> list[dict[str, Any]]:
+        """Return device registry records, including nullable relationships."""
+        return self._registry("device_registry", "id")
+
+    def get_entity_registry(self) -> list[dict[str, Any]]:
+        """Return registered entities, including entries without current states."""
+        return self._registry("entity_registry", "entity_id")
+
+    def watch_events(
+        self, event_type: str, *, max_events: int | None = 100, duration: float | None = 30
+    ) -> EventStream:
+        """Create a bounded observation window; use its context manager to close early."""
+        from .events import EventStream
+
+        return EventStream(self.config, event_type, max_events=max_events, duration=duration)
+
     def call_service(
         self,
         domain: str,
@@ -350,6 +382,35 @@ class HomeAssistant:
             if data is not None:
                 payload["data"] = dict(data)
         return _object_response(self._request("POST", "intent/handle", data=payload), "intent")
+
+    def process_conversation(
+        self,
+        text: str,
+        *,
+        language: str | None = None,
+        agent_id: str | None = None,
+        conversation_id: str | None = None,
+    ) -> dict[str, Any]:
+        """Submit an action-capable sentence; callers own conversation IDs and retries."""
+        if not isinstance(text, str) or not text.strip():
+            raise ValueError("text must be a non-empty string")
+        payload = {"text": text}
+        for name, value in (("language", language), ("agent_id", agent_id), ("conversation_id", conversation_id)):
+            if value is not None:
+                if not isinstance(value, str) or not value:
+                    raise ValueError(f"{name} must be a non-empty string")
+                payload[name] = value
+        result = _object_response(self._request("POST", "conversation/process", data=payload), "conversation")
+        response = _object_response(result.get("response"), "conversation")
+        if not isinstance(response.get("response_type"), str):
+            raise ResponseError("Home Assistant conversation response has an invalid response type")
+        if "data" in response and not isinstance(response["data"], dict):
+            raise ResponseError("Home Assistant conversation response has invalid data")
+        if result.get("conversation_id") is not None and not isinstance(result["conversation_id"], str):
+            raise ResponseError("Home Assistant conversation response has an invalid conversation ID")
+        if "continue_conversation" in result and not isinstance(result["continue_conversation"], bool):
+            raise ResponseError("Home Assistant conversation response has an invalid continuation flag")
+        return result
 
 
 __all__ = ["HomeAssistant"]
