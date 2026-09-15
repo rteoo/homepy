@@ -9,6 +9,7 @@ from __future__ import annotations
 
 from collections.abc import Iterable, Mapping
 import json
+import math
 from typing import Any
 
 from .exceptions import error_details
@@ -25,12 +26,14 @@ class AgentToolError(Exception):
         category: str | None = None,
         status_code: int | None = None,
         hint: str | None = None,
+        command_code: str | None = None,
     ) -> None:
         self.code = code
         self.message = message
         self.category = category
         self.status_code = status_code
         self.hint = hint
+        self.command_code = command_code
         super().__init__(message)
 
     def to_details(self) -> dict[str, str | int]:
@@ -43,6 +46,8 @@ class AgentToolError(Exception):
             details["status_code"] = self.status_code
         if self.hint is not None:
             details["hint"] = self.hint
+        if self.command_code is not None:
+            details["command_code"] = self.command_code
         return details
 
 
@@ -62,12 +67,14 @@ def _client_error(exc: Exception) -> AgentToolError:
     category = details.get("category")
     status_code = details.get("status_code")
     hint = details.get("hint")
+    command_code = details.get("command_code")
     return AgentToolError(
         str(details["code"]),
         str(details["message"]),
         category=category if isinstance(category, str) else None,
         status_code=status_code if isinstance(status_code, int) else None,
         hint=hint if isinstance(hint, str) else None,
+        command_code=command_code if isinstance(command_code, str) else None,
     )
 
 
@@ -135,6 +142,20 @@ def _validate_optional_bool(arguments: Mapping[str, Any], name: str, default: bo
     return value
 
 
+def _validate_event_limits(arguments: Mapping[str, Any]) -> tuple[int, float]:
+    """Validate the finite, always-active limits used by event collection."""
+
+    max_events = arguments.get("max_events", 100)
+    if type(max_events) is not int or not 1 <= max_events <= 100:
+        raise AgentToolError("invalid_arguments", "max_events must be an integer from 1 to 100")
+    duration = arguments.get("duration", 30)
+    if isinstance(duration, bool) or not isinstance(duration, (int, float)):
+        raise AgentToolError("invalid_arguments", "duration must be a finite number greater than zero and at most 30")
+    if duration <= 0 or duration > 30 or not math.isfinite(duration):
+        raise AgentToolError("invalid_arguments", "duration must be a finite number greater than zero and at most 30")
+    return max_events, float(duration)
+
+
 class AgentTools:
     """Expose a narrow, policy-controlled set of Home Assistant tools.
 
@@ -151,9 +172,19 @@ class AgentTools:
         *,
         allow_actions: bool = False,
         allowed_services: Iterable[str] | None = None,
+        include_discovery: bool = False,
+        include_events: bool = False,
+        allow_conversation: bool = False,
     ) -> None:
         if type(allow_actions) is not bool:
             raise TypeError("allow_actions must be a boolean")
+        for name, value in (
+            ("include_discovery", include_discovery),
+            ("include_events", include_events),
+            ("allow_conversation", allow_conversation),
+        ):
+            if type(value) is not bool:
+                raise TypeError(f"{name} must be a boolean")
         if isinstance(allowed_services, (str, bytes)):
             raise TypeError("allowed_services must be an iterable of service names")
         if allowed_services is None:
@@ -165,9 +196,20 @@ class AgentTools:
                 raise TypeError("allowed_services must be an iterable of service names") from None
             if any(not isinstance(item, str) or not item for item in normalized_services):
                 raise TypeError("allowed_services must contain non-empty strings")
+        if allow_conversation and (not allow_actions or normalized_services is not None):
+            raise TypeError(
+                "allow_conversation requires allow_actions=True and allowed_services=None"
+            )
         self.client = client
         self.allow_actions = allow_actions
         self.allowed_services = normalized_services
+        self.include_discovery = include_discovery
+        self.include_events = include_events
+        self.allow_conversation = allow_conversation
+
+    @property
+    def _conversation_enabled(self) -> bool:
+        return self.allow_conversation and self.allow_actions and self.allowed_services is None
 
     @property
     def tools(self) -> list[dict[str, Any]]:
@@ -242,6 +284,55 @@ class AgentTools:
                     },
                 }
             )
+        if self.include_discovery:
+            definitions.extend(
+                _empty_tool_definition(name, description)
+                for name, description in (
+                    ("ha_get_areas", "List Home Assistant area registry entries."),
+                    ("ha_get_devices", "List Home Assistant device registry entries."),
+                    ("ha_get_entity_registry", "List Home Assistant entity registry entries."),
+                )
+            )
+        if self.include_events:
+            definitions.append(
+                {
+                    "type": "function",
+                    "function": {
+                        "name": "ha_collect_events",
+                        "description": "Collect a bounded sequence of Home Assistant events of one type.",
+                        "parameters": {
+                            "type": "object",
+                            "properties": {
+                                "event_type": {"type": "string"},
+                                "max_events": {"type": "integer", "minimum": 1, "maximum": 100, "default": 100},
+                                "duration": {"type": "number", "exclusiveMinimum": 0, "maximum": 30, "default": 30},
+                            },
+                            "required": ["event_type"],
+                            "additionalProperties": False,
+                        },
+                    },
+                }
+            )
+        if self._conversation_enabled:
+            definitions.append(
+                {
+                    "type": "function",
+                    "function": {
+                        "name": "ha_process_conversation",
+                        "description": "Submit text to Home Assistant Conversation with explicit action policy.",
+                        "parameters": {
+                            "type": "object",
+                            "properties": {
+                                "text": {"type": "string"},
+                                "language": {"type": "string"},
+                                "conversation_id": {"type": "string"},
+                            },
+                            "required": ["text"],
+                            "additionalProperties": False,
+                        },
+                    },
+                }
+            )
         return definitions
 
     def _call(self, method_name: str, *args: Any, **kwargs: Any) -> Any:
@@ -258,6 +349,14 @@ class AgentTools:
                 method = self.client.get_services
             elif method_name == "call_service":
                 method = self.client.call_service
+            elif method_name == "get_areas":
+                method = self.client.get_areas
+            elif method_name == "get_devices":
+                method = self.client.get_devices
+            elif method_name == "get_entity_registry":
+                method = self.client.get_entity_registry
+            elif method_name == "process_conversation":
+                method = self.client.process_conversation
             else:  # pragma: no cover - all callers are fixed below
                 raise AgentToolError("client_error", "Home Assistant client is unavailable")
             if not callable(method):
@@ -311,7 +410,74 @@ class AgentTools:
                 return_response=return_response,
             )
 
+        if name in {"ha_get_areas", "ha_get_devices", "ha_get_entity_registry"}:
+            if not self.include_discovery:
+                raise AgentToolError("discovery_disabled", "Home Assistant registry discovery is disabled")
+            _validate_keys(args, set())
+            method_name = {
+                "ha_get_areas": "get_areas",
+                "ha_get_devices": "get_devices",
+                "ha_get_entity_registry": "get_entity_registry",
+            }[name]
+            return self._call(method_name)
+
+        if name == "ha_collect_events":
+            if not self.include_events:
+                raise AgentToolError("events_disabled", "Home Assistant event collection is disabled")
+            _validate_keys(args, {"event_type", "max_events", "duration"}, {"event_type"})
+            event_type = _validate_string(args, "event_type")
+            max_events, duration = _validate_event_limits(args)
+            try:
+                stream = self.client.watch_events(
+                    event_type, max_events=max_events, duration=duration
+                )
+                with stream as active:
+                    events = [_json_compatible(event) for event in active]
+                    stop_reason = active.stop_reason
+                return _json_compatible({"events": events, "stop_reason": stop_reason})
+            except AgentToolError:
+                raise
+            except Exception as exc:
+                raise _client_error(exc) from None
+
+        if name == "ha_process_conversation":
+            if not self.allow_conversation:
+                raise AgentToolError("conversation_disabled", "Home Assistant conversation is disabled")
+            if not self._conversation_enabled:
+                raise AgentToolError(
+                    "conversation_policy",
+                    "Conversation requires actions enabled and no service allowlist",
+                )
+            _validate_keys(args, {"text", "language", "conversation_id"}, {"text"})
+            text = _validate_string(args, "text")
+            if not text.strip():
+                raise AgentToolError("invalid_arguments", "text must contain non-whitespace characters")
+            language = _validate_optional_string(args, "language")
+            conversation_id = _validate_optional_string(args, "conversation_id")
+            return self._call(
+                "process_conversation",
+                text,
+                language=language,
+                agent_id="home_assistant",
+                conversation_id=conversation_id,
+            )
+
         raise AgentToolError("unknown_tool", "Unknown Home Assistant tool")
 
 
 __all__ = ["AgentToolError", "AgentTools"]
+
+
+def _empty_tool_definition(name: str, description: str) -> dict[str, Any]:
+    return {
+        "type": "function",
+        "function": {
+            "name": name,
+            "description": description,
+            "parameters": {
+                "type": "object",
+                "properties": {},
+                "additionalProperties": False,
+            },
+        },
+    }
