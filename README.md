@@ -1,6 +1,6 @@
 # Homepy
 
-A Python client for Home Assistant's REST API, with JSON tools that other agents
+A Python client for Home Assistant's REST and WebSocket APIs, with JSON tools that other agents
 can call. Python 3.11 or later; no third-party runtime dependencies.
 
 It reads entities and available services, calls device actions, retrieves history,
@@ -18,7 +18,7 @@ python -m pip install .
 Alternatively, install a built wheel without downloading dependencies:
 
 ```powershell
-python -m pip install --no-index --no-deps ./dist/homepy-0.1.1-py3-none-any.whl
+python -m pip install --no-index --no-deps ./dist/homepy-0.2.0-py3-none-any.whl
 ```
 
 Source builds use [setuptools 77 or later](https://setuptools.pypa.io/en/latest/userguide/pyproject_config.html).
@@ -218,16 +218,86 @@ To deny every action from the CLI, omit `--allow-actions`.
 | `render_template` | Home Assistant template output as text |
 | `check_config` | Validate Home Assistant configuration |
 | `handle_intent` | Execute an intent through the intent integration |
+| `process_conversation` | Submit text to Conversation/Assist |
 
 History takes a nonempty list of entity IDs. Timestamp arguments accept aware
 Python `datetime` values or ISO strings with a timezone. Endpoint availability
 and permissions depend on Home Assistant's installed integrations and token user.
 
+## Capability extensions
+
+Homepy 0.2.0 provides dependency-free, synchronous WebSocket capabilities alongside
+the REST client. `get_areas()`, `get_devices()`, and `get_entity_registry()`
+return the authenticated user's registry records, preserving unknown fields.
+The CLI exposes them as `areas`, `devices`, and `entity-registry`; agent schemas
+are opt-in with `include_discovery=True` or `--include-discovery`.
+
+```python
+areas = ha.get_areas()
+devices = ha.get_devices()
+registered_entities = ha.get_entity_registry()
+
+with ha.watch_events("state_changed", max_events=10, duration=15) as events:
+    for event in events:
+        print(event)
+print(events.stop_reason)  # max_events, duration, or closed
+```
+
+`watch_events(event_type, *, max_events=100, duration=30)` returns a closeable
+`EventStream`. The CLI `watch` command emits one event per flushed NDJSON line;
+`--event-type` is required and the count/duration defaults are 100 and 30.
+Ctrl-C closes the stream and exits 130. Streams use one connection, bounded
+setup and observation budgets, a 16 MiB message and cumulative event-payload
+limit and a one-second cleanup allowance. They do not retry,
+redirect, use ambient proxies or compression, reconnect, or promise gap-free
+delivery. OS DNS resolution may exceed an application deadline.
+
+Use the context manager when you might stop iteration early. Python callers can
+set either limit to `None`, but must retain at least one. Agent collection is
+opt-in with `include_events=True` and always caps observations at 100 events and
+30 seconds. Registry reads use separate connections and do not form an atomic
+snapshot. A registered entity need not have a current state.
+An entity can have its own area assignment that differs from its device's area;
+callers must resolve those relationships deliberately.
+
+```powershell
+python -m homepy areas
+python -m homepy watch --event-type state_changed --max-events 10 --duration 15
+python -m homepy tools --include-discovery --include-events
+python -m homepy tool ha_collect_events --include-events --arguments '{"event_type":"state_changed","duration":5}'
+```
+
+`process_conversation(text, *, language=None, agent_id=None,
+conversation_id=None)` submits to Home Assistant's Conversation REST API and
+returns its structured response. Agent and CLI conversation access requires both
+`allow_actions` and `allow_conversation`, with no `allowed_services` collection
+(including an empty one). The built-in `home_assistant` agent is selected at
+those boundaries; direct Python callers may provide `agent_id`.
+
+```python
+reply = ha.process_conversation("What time is it?", language="en")
+# Preserve the returned conversation_id when continuing the same conversation.
+```
+
+```powershell
+python -m homepy conversation --text "What time is it?" --allow-actions --allow-conversation
+```
+
+Conversation can operate devices and cannot enforce Homepy's service allowlist.
+An HTTP 200 response may still describe an Assist domain error; that structured
+response is preserved. A timeout leaves the outcome unknown and is never retried.
+
+See [MCP compatibility](docs/mcp-compatibility.md) for the native Home Assistant
+MCP/Assist comparison and a placeholder-only verification runbook. No live
+instance or credentials were used for that guide.
+
 ## Failures and connection behavior
 
 Catch `HomeAssistantError` for client failures. More specific exceptions include
 `ConfigurationError`, `TransportError`, `AuthenticationError`, `NotFoundError`,
-`APIError`, and `ResponseError`. HTTP failures expose `status_code`. Invalid
+`APIError`, `ResponseError`, `WebSocketAuthenticationError`, and
+`WebSocketCommandError`. HTTP failures expose `status_code`. WebSocket command
+failures expose a sanitized `command_code`; they have no HTTP status. Invalid
 endpoint arguments raise `ValueError` or `TypeError` before a request is sent.
 
 `TransportError.category` distinguishes `dns`, `refused`, `timeout`, `tls`, and
@@ -247,16 +317,17 @@ response is lost, its outcome is unknown: check the device state before deciding
 whether to issue another action.
 
 Responses are capped at 16 MiB, including camera snapshots and history. Request a
-smaller history window if that cap is reached. The timeout bounds socket
+smaller history window if that cap is reached. For REST, the timeout bounds socket
 operations, not the total duration of a peer that continuously sends data.
 
 ## Scope
 
-This implements the [Home Assistant REST API](https://developers.home-assistant.io/docs/api/rest/).
+This implements the [Home Assistant REST API](https://developers.home-assistant.io/docs/api/rest/)
+and read-only registry/event commands from the
+[WebSocket API](https://developers.home-assistant.io/docs/api/websocket/).
 It controls devices through services available on that API. It does not automate
-browser clicks, edit dashboards or integration registries, manage Supervisor,
-or implement [WebSocket subscriptions](https://developers.home-assistant.io/docs/api/websocket/).
-Those surfaces need separate clients; REST coverage does not imply every UI
+browser clicks, edit dashboards or integration registries, or manage Supervisor.
+Those surfaces need separate clients; API coverage does not imply every UI
 administration operation is available.
 
 ## Development
@@ -277,6 +348,6 @@ Artifacts are written to `dist/`. The wheel contains the runtime package, its
 `py.typed` marker, license, and metadata; the source archive also includes tests
 and the implementation plan.
 
-Tests use fake data and loopback HTTP servers. They do not contact or operate a
+Tests use fake data and loopback HTTP/WebSocket servers. They do not contact or operate a
 real Home Assistant installation. See [PLAN.md](PLAN.md) for architecture and
 verification scope.

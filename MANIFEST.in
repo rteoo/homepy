@@ -1,2 +1,6 @@
 include PLAN.md
 recursive-include tests *.py
+recursive-include tests *.pem
+recursive-include tests *.md
+recursive-include docs *.md
+recursive-include specs *.md
