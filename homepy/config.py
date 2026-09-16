@@ -7,6 +7,7 @@ from dataclasses import dataclass, field
 import ipaddress
 import math
 import os
+import warnings
 from urllib.parse import unquote, urlsplit
 
 from .exceptions import ConfigurationError
@@ -117,6 +118,18 @@ class ConnectionConfig:
         if self.ca_file is not None and not isinstance(self.ca_file, str):
             raise _invalid("ca_file must be a path string")
         scheme, hostname, effective_port, prefix = _authority_url(self.host, explicit_port)
+        try:
+            loopback = ipaddress.ip_address(hostname).is_loopback
+        except ValueError:
+            loopback = False
+        if scheme == "http" and not loopback:
+            warnings.warn(
+                "Home Assistant uses plain HTTP: the bearer token is unencrypted. "
+                "Use HTTPS or verify that the connection travels through an encrypted tunnel. "
+                "A hostname or tailnet-looking address alone does not verify that protection.",
+                UserWarning,
+                stacklevel=2,
+            )
         object.__setattr__(self, "timeout", float(self.timeout))
         object.__setattr__(self, "_scheme", scheme)
         object.__setattr__(self, "_hostname", hostname)

@@ -282,7 +282,7 @@ class CLIFeatureTests(unittest.TestCase):
             "class C:\n"
             "    def watch_events(self, *args, **kwargs): return S()\n"
             "sys.stdin.buffer.read(1)\n"
-            "raise SystemExit(main(['watch', '--event-type', 'x'], environ={'HA_TOKEN': 'secret'}, client_factory=lambda *a, **k: C()))\n"
+            "raise SystemExit(main(['watch', '--event-type', 'x'], environ={'HA_TOKEN': 'secret', 'HA_URL': 'https://example.invalid'}, client_factory=lambda *a, **k: C()))\n"
         )
         process = subprocess.Popen(
             [sys.executable, "-c", script],

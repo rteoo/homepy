@@ -329,6 +329,12 @@ Artifacts are written to `dist/`. Tests use synthetic data and loopback
 HTTP/WebSocket/TLS servers; they do not contact or operate a real Home Assistant
 installation. See [PLAN.md](PLAN.md) for architecture and verification scope.
 
+## Transport privacy
+
+Plain HTTP to a non-loopback host emits a warning because the bearer token is
+unencrypted. Prefer an HTTPS URL; if using a tunnel, verify the actual route.
+A private or Tailscale-looking address alone does not prove encryption.
+
 ## License
 
 Homepy is released under the [MIT License](LICENSE).
