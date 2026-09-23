@@ -183,7 +183,8 @@ result = agent.dispatch("ha_get_state", {"entity_id": "light.desk"})
 
 The default `allow_actions=False` hides and denies the service-call tool. An
 empty `allowed_services` collection denies every service; `None` permits any
-service only when actions are explicitly enabled. Discovery and event tools are
+service only when actions are explicitly enabled. Each entry must use the
+`DOMAIN.SERVICE` form; an entry that could never match raises `TypeError`. Discovery and event tools are
 also opt-in with `include_discovery=True` and `include_events=True`.
 
 The allowlist limits service names, not individual entities or payloads. The
@@ -204,7 +205,8 @@ worker thread or undo a device action.
 ## JSON command line
 
 All commands write JSON. Successful output goes to stdout; failures go to
-stderr and use a nonzero exit status.
+stderr and use a nonzero exit status. Stderr holds at most one JSON object, with
+an `error` key on failure and a `warning` key for plain-HTTP connections.
 
 ```powershell
 python -m homepy health
@@ -331,9 +333,12 @@ installation. See [PLAN.md](PLAN.md) for architecture and verification scope.
 
 ## Transport privacy
 
-Plain HTTP to a non-loopback host emits a warning because the bearer token is
-unencrypted. Prefer an HTTPS URL; if using a tunnel, verify the actual route.
-A private or Tailscale-looking address alone does not prove encryption.
+Plain HTTP to a non-loopback host emits `homepy.InsecureTransportWarning`
+because the bearer token is unencrypted. Prefer an HTTPS URL; if using a tunnel,
+verify the actual route. A private or Tailscale-looking address alone does not
+prove encryption. After verifying a tunnel, silence it with
+`warnings.simplefilter("ignore", homepy.InsecureTransportWarning)`. The CLI
+reports it as `{"warning": {"code": "insecure_transport", ...}}` on stderr.
 
 ## License
 

@@ -66,6 +66,10 @@ class WebSocketCommandError(HomeAssistantError):
         super().__init__("Home Assistant WebSocket command failed")
 
 
+class InsecureTransportWarning(UserWarning):
+    """The bearer token would travel over plain HTTP to a non-loopback host."""
+
+
 _TRANSPORT_MESSAGES = {
     "dns": "Home Assistant hostname could not be resolved",
     "refused": "Home Assistant connection was refused",
@@ -138,6 +142,7 @@ __all__ = [
     "AuthenticationError",
     "ConfigurationError",
     "HomeAssistantError",
+    "InsecureTransportWarning",
     "NotFoundError",
     "ResponseError",
     "TransportError",

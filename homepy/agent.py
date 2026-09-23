@@ -196,6 +196,13 @@ class AgentTools:
                 raise TypeError("allowed_services must be an iterable of service names") from None
             if any(not isinstance(item, str) or not item for item in normalized_services):
                 raise TypeError("allowed_services must contain non-empty strings")
+            # A malformed entry can never match a call, so it would silently
+            # deny that service instead of surfacing the misconfiguration.
+            if any(
+                item.count(".") != 1 or item.startswith(".") or item.endswith(".")
+                for item in normalized_services
+            ):
+                raise TypeError("allowed_services entries must use the DOMAIN.SERVICE form")
         if allow_conversation and (not allow_actions or normalized_services is not None):
             raise TypeError(
                 "allow_conversation requires allow_actions=True and allowed_services=None"

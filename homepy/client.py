@@ -7,7 +7,7 @@ from datetime import datetime
 from typing import TYPE_CHECKING, Any, Self, cast
 from urllib.parse import quote
 
-from .config import ConnectionConfig
+from .config import ConnectionConfig, _env_settings
 from .exceptions import ResponseError
 from .transport import Transport
 
@@ -114,16 +114,9 @@ class HomeAssistant:
 
     @classmethod
     def from_env(cls) -> Self:
-        """Create a client from ``ConnectionConfig.from_env()``."""
-        config = ConnectionConfig.from_env()
-        return cls(
-            config.token,
-            config.host,
-            port=config.port,
-            timeout=config.timeout,
-            verify_ssl=config.verify_ssl,
-            ca_file=config.ca_file,
-        )
+        """Create a client from the ``HA_*`` variables read by ``ConnectionConfig.from_env()``."""
+        settings = _env_settings()
+        return cls(settings.pop("token"), settings.pop("host"), verify_ssl=True, **settings)
 
     def _request(
         self,
@@ -317,6 +310,8 @@ class HomeAssistant:
         params: dict[str, Any] = {}
         _params_timestamp(params, "end_time", end)
         if entity_id is not None:
+            if not isinstance(entity_id, str) or not entity_id:
+                raise ValueError("entity_id must be a non-empty string")
             params["entity"] = entity_id
         path = "logbook"
         if start is not None:
@@ -354,6 +349,8 @@ class HomeAssistant:
         self, template: str, variables: Mapping[str, Any] | None = None
     ) -> str:
         """Render a Home Assistant template as plain text."""
+        if not isinstance(template, str) or not template:
+            raise ValueError("template must be a non-empty string")
         data: dict[str, Any] = {"template": template}
         if variables is not None:
             data["variables"] = dict(variables)

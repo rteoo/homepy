@@ -12,6 +12,11 @@ from homepy.cli import main
 from homepy.exceptions import WebSocketCommandError
 
 
+# HTTPS keeps the insecure-transport warning out of stderr in fixtures that
+# are not about transport security.
+HTTPS_URL = "https://ha.example.invalid"
+
+
 class _Stream:
     def __init__(self, events, stop_reason="max_events", error=None):
         self.events = events
@@ -172,7 +177,7 @@ class CLIFeatureTests(unittest.TestCase):
     def run_cli(self, argv, client=None):
         client = client or _Client()
         out, err = StringIO(), StringIO()
-        status = main(argv, environ={"HA_TOKEN": "secret"}, client_factory=lambda *a, **kw: client, stdout=out, stderr=err)
+        status = main(argv, environ={"HA_TOKEN": "secret", "HA_URL": HTTPS_URL}, client_factory=lambda *a, **kw: client, stdout=out, stderr=err)
         return status, out.getvalue(), err.getvalue(), client
 
     def test_watch_is_ndjson_without_footer(self):
@@ -200,7 +205,7 @@ class CLIFeatureTests(unittest.TestCase):
         error = StringIO()
         status = main(
             ["watch", "--event-type", "state_changed"],
-            environ={"HA_TOKEN": "secret"},
+            environ={"HA_TOKEN": "secret", "HA_URL": HTTPS_URL},
             client_factory=lambda *a, **kw: client,
             stdout=output,
             stderr=error,
@@ -212,7 +217,7 @@ class CLIFeatureTests(unittest.TestCase):
         output, error = StringIO(), StringIO()
         status = main(
             ["watch", "--event-type", "state_changed"],
-            environ={"HA_TOKEN": "secret"},
+            environ={"HA_TOKEN": "secret", "HA_URL": HTTPS_URL},
             client_factory=lambda *a, **kw: client,
             stdout=output,
             stderr=error,
@@ -228,7 +233,7 @@ class CLIFeatureTests(unittest.TestCase):
         output, error = StringIO(), StringIO()
         status = main(
             ["watch", "--event-type", "state_changed"],
-            environ={"HA_TOKEN": "secret"},
+            environ={"HA_TOKEN": "secret", "HA_URL": HTTPS_URL},
             client_factory=lambda *a, **kw: client,
             stdout=output,
             stderr=error,
@@ -240,7 +245,7 @@ class CLIFeatureTests(unittest.TestCase):
         client.stream = _Stream([{"event_type": "state_changed"}])
         status = main(
             ["watch", "--event-type", "state_changed"],
-            environ={"HA_TOKEN": "secret"},
+            environ={"HA_TOKEN": "secret", "HA_URL": HTTPS_URL},
             client_factory=lambda *a, **kw: client,
             stdout=_BrokenOutput(),
             stderr=error,
@@ -326,7 +331,7 @@ class CLIFeatureTests(unittest.TestCase):
             out, err = StringIO(), StringIO()
             status = main(
                 ["conversation", "--text", "turn on the light", *extra],
-                environ={"HA_TOKEN": "secret"}, client_factory=factory, stdout=out, stderr=err,
+                environ={"HA_TOKEN": "secret", "HA_URL": HTTPS_URL}, client_factory=factory, stdout=out, stderr=err,
             )
             self.assertEqual(status, 2)
             self.assertEqual(factory_calls, [])
@@ -343,7 +348,7 @@ class CLIFeatureTests(unittest.TestCase):
             out, err = StringIO(), StringIO()
             status = main(
                 ["watch", "--event-type", "state_changed", option, value],
-                environ={"HA_TOKEN": "secret"}, client_factory=factory, stdout=out, stderr=err,
+                environ={"HA_TOKEN": "secret", "HA_URL": HTTPS_URL}, client_factory=factory, stdout=out, stderr=err,
             )
             self.assertEqual(status, 2)
             self.assertEqual(json.loads(err.getvalue())["error"]["code"], "invalid_arguments")
