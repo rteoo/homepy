@@ -186,16 +186,20 @@ class HTTPIntegrationTests(unittest.TestCase):
         client = Mock()
         client.health.return_value = {"message": "API running."}
         factory = Mock(return_value=client)
-        for argv, expected in [
-            (["health"], {"host": "https://ha.example.invalid", "port": 443, "timeout": 2.5}),
+        for argv, expected, warning in [
+            (["health"], {"host": "https://ha.example.invalid", "port": 443, "timeout": 2.5}, None),
             (["--host", "other.example.invalid", "--port", "8124", "--timeout", "5", "health"],
-             {"host": "other.example.invalid", "port": 8124, "timeout": 5.0}),
+             {"host": "other.example.invalid", "port": 8124, "timeout": 5.0}, "insecure_transport"),
         ]:
             with self.subTest(argv=argv):
                 out, err = StringIO(), StringIO()
                 self.assertEqual(main(argv, environ=env, client_factory=factory, stdout=out, stderr=err), 0)
                 factory.assert_called_with("test-only-token", ca_file="test-ca.pem", **expected)
-                self.assertEqual(err.getvalue(), "")
+                if warning is None:
+                    self.assertEqual(err.getvalue(), "")
+                else:
+                    self.assertEqual(json.loads(err.getvalue())["warning"]["code"], warning)
+                    self.assertNotIn("test-only-token", err.getvalue())
 
     def test_malformed_server_shapes_raise_safe_client_errors(self):
         cases = [

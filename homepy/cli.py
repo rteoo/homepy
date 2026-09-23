@@ -7,12 +7,13 @@ import json
 import math
 import os
 import sys
+import warnings
 from collections.abc import Mapping, Sequence
 from typing import Any, Callable, TextIO
 
 from .agent import AgentToolError, AgentTools
 from .config import ConnectionConfig
-from .exceptions import error_details
+from .exceptions import InsecureTransportWarning, error_details
 
 
 class CLIError(Exception):
@@ -62,6 +63,12 @@ class CLIError(Exception):
         if self.command_code is not None:
             details["command_code"] = self.command_code
         return details
+
+
+_INSECURE_TRANSPORT_WARNING = {
+    "code": "insecure_transport",
+    "message": "Plain HTTP sends the bearer token unencrypted; use HTTPS or a verified encrypted tunnel",
+}
 
 
 class _ArgumentParser(argparse.ArgumentParser):
@@ -451,21 +458,35 @@ def main(
     err = stderr if stderr is not None else sys.stderr
     env = environ if environ is not None else os.environ
     factory = client_factory if client_factory is not None else _default_client_factory
-    try:
-        args = build_parser().parse_args(list(argv) if argv is not None else None)
-        result = _run(args, env, factory, stdout=out)
-        if args.command == "watch":
-            return int(result)
-        _write_json(out, result)
-        return 0
-    except (CLIError, AgentToolError) as exc:
-        _write_json(err, {"error": exc.to_details()})
-        return 2
-    except Exception:
-        # The CLI is an agent boundary: never print a traceback or exception
-        # detail that might carry a token, URL, request body, or host data.
-        _write_json(err, {"error": {"code": "internal_error", "message": "Command failed"}})
-        return 1
+    report: dict[str, Any] = {}
+    # Python's warning text would break the single-JSON-document stderr
+    # contract, so the insecure-transport warning joins the report instead.
+    with warnings.catch_warnings(record=True) as caught:
+        warnings.simplefilter("always", InsecureTransportWarning)
+        try:
+            args = build_parser().parse_args(list(argv) if argv is not None else None)
+            result = _run(args, env, factory, stdout=out)
+            if args.command == "watch":
+                status = int(result)
+            else:
+                _write_json(out, result)
+                status = 0
+        except (CLIError, AgentToolError) as exc:
+            report["error"] = exc.to_details()
+            status = 2
+        except Exception:
+            # The CLI is an agent boundary: never print a traceback or exception
+            # detail that might carry a token, URL, request body, or host data.
+            report["error"] = {"code": "internal_error", "message": "Command failed"}
+            status = 1
+    for warning in caught:
+        if issubclass(warning.category, InsecureTransportWarning):
+            report["warning"] = _INSECURE_TRANSPORT_WARNING
+        else:
+            warnings.showwarning(warning.message, warning.category, warning.filename, warning.lineno)
+    if report:
+        _write_json(err, report)
+    return status
 
 
 __all__ = ["CLIError", "build_parser", "main"]

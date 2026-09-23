@@ -7,7 +7,7 @@ from datetime import datetime
 from typing import TYPE_CHECKING, Any, Self, cast
 from urllib.parse import quote
 
-from .config import ConnectionConfig
+from .config import ConnectionConfig, _env_settings
 from .exceptions import ResponseError
 from .transport import Transport
 
@@ -114,16 +114,9 @@ class HomeAssistant:
 
     @classmethod
     def from_env(cls) -> Self:
-        """Create a client from ``ConnectionConfig.from_env()``."""
-        config = ConnectionConfig.from_env()
-        return cls(
-            config.token,
-            config.host,
-            port=config.port,
-            timeout=config.timeout,
-            verify_ssl=config.verify_ssl,
-            ca_file=config.ca_file,
-        )
+        """Create a client from the ``HA_*`` variables read by ``ConnectionConfig.from_env()``."""
+        settings = _env_settings()
+        return cls(settings.pop("token"), settings.pop("host"), verify_ssl=True, **settings)
 
     def _request(
         self,
