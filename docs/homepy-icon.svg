@@ -1,0 +1,39 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 1024 1024" width="1024" height="1024">
+  <title>homepy</title>
+  <defs>
+    <linearGradient id="tile" x1="0" y1="0" x2="0" y2="1">
+      <stop offset="0" stop-color="#16408a"/>
+      <stop offset="0.5" stop-color="#0d2a62"/>
+      <stop offset="1" stop-color="#081a40"/>
+    </linearGradient>
+    <linearGradient id="sheen" x1="0" y1="0" x2="0" y2="1">
+      <stop offset="0" stop-color="#ffffff" stop-opacity="0.12"/>
+      <stop offset="1" stop-color="#ffffff" stop-opacity="0"/>
+    </linearGradient>
+    <linearGradient id="glyph" x1="0" y1="0" x2="1" y2="1">
+      <stop offset="0" stop-color="#5ee7f5"/>
+      <stop offset="1" stop-color="#2a9df4"/>
+    </linearGradient>
+    <radialGradient id="halo" cx="0.5" cy="0.5" r="0.5">
+      <stop offset="0" stop-color="#ff8a2a" stop-opacity="0.45"/>
+      <stop offset="1" stop-color="#ff8a2a" stop-opacity="0"/>
+    </radialGradient>
+    <clipPath id="tile-clip">
+      <rect x="64" y="64" width="896" height="896" rx="200"/>
+    </clipPath>
+  </defs>
+
+  <!-- Tile: the same rounded slab, lit from above, as the sibling apps. -->
+  <rect x="64" y="64" width="896" height="896" rx="200" fill="url(#tile)"/>
+  <rect x="64" y="64" width="896" height="380" fill="url(#sheen)" clip-path="url(#tile-clip)"/>
+  <rect x="68" y="68" width="888" height="888" rx="196" fill="none" stroke="#5aa0ff" stroke-opacity="0.35" stroke-width="8"/>
+
+  <!-- House: roof and walls drawn as one continuous rounded stroke. -->
+  <path d="M232 492 L512 262 L792 492 M322 430 V742 Q322 780 360 780 H664 Q702 780 702 742 V430"
+        fill="none" stroke="url(#glyph)" stroke-width="76" stroke-linecap="round" stroke-linejoin="round"/>
+
+  <!-- Inside: state rows as JSON lines; the warm one is the live entity. -->
+  <rect x="398" y="508" width="228" height="64" rx="32" fill="#bdf6ff" fill-opacity="0.9"/>
+  <ellipse cx="480" cy="650" rx="150" ry="90" fill="url(#halo)"/>
+  <rect x="398" y="618" width="164" height="64" rx="32" fill="#ff8a2a"/>
+</svg>
