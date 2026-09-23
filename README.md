@@ -11,7 +11,7 @@
 
 <p align="center">
   <a href="https://github.com/rteoo/homepy/actions/workflows/tests.yml"><img src="https://github.com/rteoo/homepy/actions/workflows/tests.yml/badge.svg" alt="Test status"></a>
-  <a href="pyproject.toml"><img src="https://img.shields.io/badge/python-3.11%2B-3776AB.svg" alt="Python 3.11 or later"></a>
+  <a href="https://github.com/rteoo/homepy/tags"><img src="https://img.shields.io/github/v/tag/rteoo/homepy?label=stable" alt="Stable tag"></a>
   <a href="LICENSE"><img src="https://img.shields.io/badge/license-MIT-blue.svg" alt="MIT license"></a>
 </p>
 
@@ -37,9 +37,15 @@ disabled until a caller explicitly enables it.
 
 ## Quick start
 
-Homepy is installed from source; there is no packaged release yet. Clone the
-repository and install it into the Python environment used by your application
-or agent:
+The current stable release is
+[`v0.2.0`](https://github.com/rteoo/homepy/releases/tag/v0.2.0). Install it
+directly into the Python environment used by your application or agent:
+
+```powershell
+python -m pip install git+https://github.com/rteoo/homepy.git@v0.2.0
+```
+
+To work from a clone instead:
 
 ```powershell
 git clone https://github.com/rteoo/homepy.git
