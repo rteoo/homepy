@@ -148,8 +148,6 @@ class Transport:
             response = connection.getresponse()
             payload = self._read_bounded(response)
             status = response.status
-        except ResponseError:
-            raise
         except TransportError:
             raise
         except socket.gaierror:

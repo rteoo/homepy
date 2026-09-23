@@ -84,6 +84,15 @@ class ClientTests(unittest.TestCase):
         )
         self.assertEqual(self.request.call_args.kwargs["params"]["start"], "2026-01-01T00:00:00Z")
 
+    def test_template_and_logbook_entity_are_validated_before_sending(self) -> None:
+        for template in ("", None, 42):
+            with self.subTest(template=template):
+                self.assertRaises(ValueError, self.client.render_template, template)
+        for entity_id in ("", 42):
+            with self.subTest(entity_id=entity_id):
+                self.assertRaises(ValueError, self.client.get_logbook, entity_id=entity_id)
+        self.request.assert_not_called()
+
     def test_remaining_endpoint_contracts(self) -> None:
         self.request.return_value = [{"extra": True}]
         self.assertEqual(self.client.get_components(), [{"extra": True}])

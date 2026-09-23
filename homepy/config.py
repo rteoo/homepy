@@ -7,10 +7,12 @@ from dataclasses import dataclass, field
 import ipaddress
 import math
 import os
+import sys
+from typing import Any
 import warnings
 from urllib.parse import unquote, urlsplit
 
-from .exceptions import ConfigurationError
+from .exceptions import ConfigurationError, InsecureTransportWarning
 
 
 _DEFAULT_HOST = "homeassistant.local"
@@ -27,6 +29,22 @@ def _validate_port(value: int | None) -> int | None:
     if isinstance(value, bool) or not isinstance(value, int) or not 1 <= value <= 65535:
         raise _invalid("port must be an integer from 1 to 65535")
     return value
+
+
+def _caller_stacklevel() -> int:
+    """Return the stacklevel of the first frame outside homepy.
+
+    Configuration is built through several public entry points, so a fixed
+    stacklevel would blame library internals instead of the caller's line.
+    """
+    package = os.path.dirname(os.path.abspath(__file__)) + os.sep
+    # Frames: this helper, __post_init__, then the dataclass-generated __init__.
+    frame = sys._getframe(3)
+    level = 3
+    while frame is not None and frame.f_code.co_filename.startswith(package):
+        frame = frame.f_back
+        level += 1
+    return level
 
 
 def _format_host(hostname: str) -> str:
@@ -127,8 +145,8 @@ class ConnectionConfig:
                 "Home Assistant uses plain HTTP: the bearer token is unencrypted. "
                 "Use HTTPS or verify that the connection travels through an encrypted tunnel. "
                 "A hostname or tailnet-looking address alone does not verify that protection.",
-                UserWarning,
-                stacklevel=2,
+                InsecureTransportWarning,
+                stacklevel=_caller_stacklevel(),
             )
         object.__setattr__(self, "timeout", float(self.timeout))
         object.__setattr__(self, "_scheme", scheme)
@@ -173,34 +191,47 @@ class ConnectionConfig:
         cannot defeat a valid command-line setting.
         """
 
-        source = os.environ if environ is None else environ
-        token = source.get("HA_TOKEN")
-        resolved_host = host if host is not None else source.get("HA_URL") or source.get("HA_HOST") or _DEFAULT_HOST
+        settings = _env_settings(environ, host=host, port=port, timeout=timeout)
+        return cls(settings.pop("token"), **settings)
 
-        if port is None:
-            port_raw = source.get("HA_PORT")
-            try:
-                resolved_port = int(port_raw) if port_raw else None
-            except (TypeError, ValueError):
-                raise _invalid("HA_PORT must be an integer from 1 to 65535") from None
-        else:
-            resolved_port = port
 
-        if timeout is None:
-            timeout_raw = source.get("HA_TIMEOUT")
-            try:
-                resolved_timeout = float(timeout_raw) if timeout_raw else 10.0
-            except (TypeError, ValueError):
-                raise _invalid("HA_TIMEOUT must be a finite positive number") from None
-        else:
-            resolved_timeout = timeout
+def _env_settings(
+    environ: Mapping[str, str] | None = None,
+    *,
+    host: str | None = None,
+    port: int | None = None,
+    timeout: float | None = None,
+) -> dict[str, Any]:
+    """Resolve ``ConnectionConfig`` arguments from ``HA_*`` variables and overrides."""
 
-        if token is None:
-            raise _invalid("HA_TOKEN is required")
-        return cls(
-            token,
-            host=resolved_host,
-            port=resolved_port,
-            timeout=resolved_timeout,
-            ca_file=source.get("HA_CA_FILE") or None,
-        )
+    source = os.environ if environ is None else environ
+    token = source.get("HA_TOKEN")
+    resolved_host = host if host is not None else source.get("HA_URL") or source.get("HA_HOST") or _DEFAULT_HOST
+
+    if port is None:
+        port_raw = source.get("HA_PORT")
+        try:
+            resolved_port = int(port_raw) if port_raw else None
+        except (TypeError, ValueError):
+            raise _invalid("HA_PORT must be an integer from 1 to 65535") from None
+    else:
+        resolved_port = port
+
+    if timeout is None:
+        timeout_raw = source.get("HA_TIMEOUT")
+        try:
+            resolved_timeout = float(timeout_raw) if timeout_raw else 10.0
+        except (TypeError, ValueError):
+            raise _invalid("HA_TIMEOUT must be a finite positive number") from None
+    else:
+        resolved_timeout = timeout
+
+    if token is None:
+        raise _invalid("HA_TOKEN is required")
+    return {
+        "token": token,
+        "host": resolved_host,
+        "port": resolved_port,
+        "timeout": resolved_timeout,
+        "ca_file": source.get("HA_CA_FILE") or None,
+    }

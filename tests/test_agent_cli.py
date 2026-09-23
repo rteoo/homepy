@@ -12,6 +12,11 @@ from homepy.cli import main
 from homepy.exceptions import APIError, TransportError
 
 
+# HTTPS keeps the insecure-transport warning out of stderr in fixtures that
+# are not about transport security.
+HTTPS_URL = "https://ha.example.invalid"
+
+
 class FakeClient:
     def __init__(self) -> None:
         self.calls: list[tuple[str, tuple, dict]] = []
@@ -78,6 +83,22 @@ class AgentToolsTests(unittest.TestCase):
         with self.assertRaisesRegex(AgentToolError, "not allowed"):
             limited.dispatch("ha_call_service", {"domain": "light", "service": "turn_off"})
 
+    def test_allowlist_entries_that_can_never_match_are_rejected(self):
+        for entry in ("light", "light.", ".turn_on", "light.turn.on"):
+            with self.subTest(entry=entry), self.assertRaisesRegex(TypeError, "DOMAIN.SERVICE"):
+                AgentTools(FakeClient(), allow_actions=True, allowed_services=[entry])
+        client, out, err = FakeClient(), StringIO(), StringIO()
+        status = main(
+            ["call", "light", "turn_on", "--allow-actions", "--allowed-service", "light"],
+            environ={"HA_TOKEN": "SECRET", "HA_URL": HTTPS_URL},
+            client_factory=lambda *a, **kw: client,
+            stdout=out,
+            stderr=err,
+        )
+        self.assertEqual(status, 2)
+        self.assertEqual(json.loads(err.getvalue())["error"]["code"], "invalid_arguments")
+        self.assertEqual(client.calls, [])
+
     def test_bad_arguments_are_rejected_without_dynamic_dispatch(self):
         tools = AgentTools(FakeClient())
         with self.assertRaisesRegex(AgentToolError, "Unknown"):
@@ -116,7 +137,7 @@ class AgentToolsTests(unittest.TestCase):
         out, err = StringIO(), StringIO()
         status = main(
             ["health"],
-            environ={"HA_TOKEN": "SECRET"},
+            environ={"HA_TOKEN": "SECRET", "HA_URL": HTTPS_URL},
             client_factory=lambda *a, **kw: APIClient(),
             stdout=out,
             stderr=err,
@@ -132,7 +153,7 @@ class CLITests(unittest.TestCase):
     def run_cli(self, argv, client=None, token="SECRET"):
         client = client or FakeClient()
         out, err = StringIO(), StringIO()
-        status = main(argv, environ={"HA_TOKEN": token}, client_factory=lambda *a, **kw: client, stdout=out, stderr=err)
+        status = main(argv, environ={"HA_TOKEN": token, "HA_URL": HTTPS_URL}, client_factory=lambda *a, **kw: client, stdout=out, stderr=err)
         return status, out.getvalue(), err.getvalue(), client
 
     def test_states_outputs_json_and_uses_connection_options(self):
@@ -142,7 +163,11 @@ class CLITests(unittest.TestCase):
             client,
         )
         self.assertEqual(status, 0)
-        self.assertEqual(stderr, "")
+        # --host overrides the HTTPS fixture URL with plain HTTP to a remote host.
+        self.assertEqual(json.loads(stderr), {"warning": {
+            "code": "insecure_transport",
+            "message": "Plain HTTP sends the bearer token unencrypted; use HTTPS or a verified encrypted tunnel",
+        }})
         self.assertEqual(json.loads(stdout)["method"], "get_states")
 
     def test_environment_overrides_are_shared_and_invalid_values_are_ignored(self):
@@ -187,7 +212,7 @@ class CLITests(unittest.TestCase):
         out, err = StringIO(), StringIO()
         status = main(
             ["services"],
-            environ={"HA_TOKEN": "SECRET"},
+            environ={"HA_TOKEN": "SECRET", "HA_URL": HTTPS_URL},
             client_factory=broken_factory,
             stdout=out,
             stderr=err,
@@ -254,7 +279,7 @@ class CLITests(unittest.TestCase):
         err = TextIOWrapper(raw_err, encoding="ascii")
         status = main(
             ["services"],
-            environ={"HA_TOKEN": "SECRET"},
+            environ={"HA_TOKEN": "SECRET", "HA_URL": HTTPS_URL},
             client_factory=lambda *a, **kw: UnicodeClient(),
             stdout=out,
             stderr=err,

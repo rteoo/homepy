@@ -1,21 +1,25 @@
 # Homepy
 
 <p align="center">
+  <img src="docs/homepy-icon.svg" width="128" alt="Homepy icon">
+</p>
+
+<p align="center">
   A dependency-free Python client for Home Assistant, with REST and WebSocket
   access plus explicit JSON tools for agents.
 </p>
 
 <p align="center">
-  <a href="https://github.com/rteoo/homepy/actions/workflows/tests.yml"><img src="https://github.com/rteoo/homepy/actions/workflows/tests.yml/badge.svg" alt="CI status"></a>
-  <a href="https://img.shields.io/badge/python-3.11%2B-3776AB.svg"><img src="https://img.shields.io/badge/python-3.11%2B-3776AB.svg" alt="Python 3.11 or later"></a>
+  <a href="https://github.com/rteoo/homepy/actions/workflows/tests.yml"><img src="https://github.com/rteoo/homepy/actions/workflows/tests.yml/badge.svg" alt="Test status"></a>
+  <a href="pyproject.toml"><img src="https://img.shields.io/badge/python-3.11%2B-3776AB.svg" alt="Python 3.11 or later"></a>
   <a href="LICENSE"><img src="https://img.shields.io/badge/license-MIT-blue.svg" alt="MIT license"></a>
 </p>
 
-Homepy is a synchronous wrapper for Home Assistant's REST API and selected
-WebSocket capabilities. It returns JSON-compatible data for states, services,
-registries, events, calendars, history, templates, intents, and Conversation.
-Runtime code uses only Python's standard library; no third-party runtime
-dependencies are required.
+Point Homepy at a Home Assistant instance with a long-lived token, then read
+entity states, call services, browse registries, or watch events from Python,
+the command line, or an agent runtime. It returns Home Assistant's own JSON
+without discarding integration-specific fields, and every device action stays
+disabled until a caller explicitly enables it.
 
 ## Highlights
 
@@ -28,14 +32,14 @@ dependencies are required.
   restricted to an exact service allowlist.
 - TLS verification, custom CA support, bounded responses, safe errors, disabled
   redirects, ignored ambient proxies, and no automatic mutation retries.
-- Preserves unknown fields inside valid Home Assistant responses.
-- Python 3.11 or later, with no live Home Assistant or household data required
-  for local testing.
+- A JSON-only command line: results on stdout, one JSON document on stderr.
+- Python 3.11 or later, using only the standard library at runtime.
 
 ## Quick start
 
-Clone the repository and install it into the Python environment used by your
-application or agent:
+Homepy is installed from source; there is no packaged release yet. Clone the
+repository and install it into the Python environment used by your application
+or agent:
 
 ```powershell
 git clone https://github.com/rteoo/homepy.git
@@ -45,31 +49,30 @@ python -m venv .venv
 python -m pip install .
 ```
 
-Homepy also supports editable installs during development:
+Use `python -m pip install -e .` for an editable development install. The
+`homepy` console command and `python -m homepy` are both available afterwards.
 
-```powershell
-python -m pip install -e .
-```
+## First use
 
-Create a long-lived access token in your Home Assistant profile and provide it
-through a secret manager or environment variable. Never put a real token in
-source code, tool arguments, shell command arguments, or a committed file.
-Homepy does not read `.env` files automatically.
+1. In Home Assistant, open your profile and create a long-lived access token.
+2. Provide it as `HA_TOKEN` through a secret manager or environment variable.
+3. Set `HA_URL` if Home Assistant is not at `http://homeassistant.local:8123`.
+4. Check the connection, then read some state:
 
 ```powershell
 $env:HA_TOKEN = "<token supplied by your secret manager>"
+$env:HA_URL = "https://ha.example.ts.net"
 python -m homepy health
 python -m homepy states --domain light
 ```
 
-There is no token command-line option. The `homepy` console command and
-`python -m homepy` are both available after installation.
+Never put a real token in source code, tool arguments, shell command arguments,
+or a committed file. There is no token command-line option, and Homepy does not
+read `.env` files automatically.
 
 ## Connect
 
-Without a host setting, Homepy connects to
-`http://homeassistant.local:8123`. Configure the connection with environment
-variables or constructor arguments:
+Configure the connection with environment variables or constructor arguments:
 
 | Setting | Purpose | Default |
 | --- | --- | --- |
@@ -95,14 +98,13 @@ https = HomeAssistant(token, host="https://ha.example.ts.net")
 custom_port = HomeAssistant(token, host="192.168.1.50", port=8124)
 ```
 
-Full URLs retain their scheme and explicit port. A bare host uses HTTP port
-8123. Use a reachable LAN address, Tailscale IP, MagicDNS hostname, or existing
-HTTPS endpoint; Tailscale must already provide routing and does not replace
-Home Assistant authentication.
-
+A bare host uses HTTP port 8123. Full URLs retain their scheme and explicit
+port; without one, the normal scheme port is used: HTTP 80 or HTTPS 443.
 Reverse-proxy path prefixes are supported, and a trailing `/api` is accepted.
-For a full URL without an explicit port, the normal scheme port is used: HTTP
-80 or HTTPS 443.
+
+Use a reachable LAN address, Tailscale IP, MagicDNS hostname, or existing HTTPS
+endpoint. Tailscale must already provide routing and does not replace Home
+Assistant authentication.
 
 ## Read Home Assistant
 
@@ -126,6 +128,17 @@ History requires a nonempty list of entity IDs. Timestamp arguments accept
 timezone-aware Python `datetime` values or ISO strings with an explicit
 timezone. Availability and permissions depend on the integrations enabled in
 your Home Assistant instance and the token user.
+
+For asynchronous runtimes, run synchronous calls in a worker thread:
+
+```python
+import asyncio
+
+state = await asyncio.to_thread(ha.get_state, "light.desk")
+```
+
+Cancelling that coroutine does not cancel a request already running in the
+worker thread or undo a device action.
 
 ## Control devices
 
@@ -181,30 +194,30 @@ tool_definitions = agent.tools
 result = agent.dispatch("ha_get_state", {"entity_id": "light.desk"})
 ```
 
-The default `allow_actions=False` hides and denies the service-call tool. An
-empty `allowed_services` collection denies every service; `None` permits any
-service only when actions are explicitly enabled. Discovery and event tools are
-also opt-in with `include_discovery=True` and `include_events=True`.
+| Option | Default | Effect |
+| --- | --- | --- |
+| `allow_actions` | `False` | Shows and permits the `ha_call_service` tool |
+| `allowed_services` | `None` | Exact `DOMAIN.SERVICE` names; empty denies every service |
+| `include_discovery` | `False` | Adds area, device, and entity-registry tools |
+| `include_events` | `False` | Adds bounded event collection |
+| `allow_conversation` | `False` | Adds Conversation; see [Events and Conversation](#events-and-conversation) |
+
+`allowed_services=None` permits any service only when actions are explicitly
+enabled. Each allowlist entry must use the `DOMAIN.SERVICE` form; an entry that
+could never match raises `TypeError`.
 
 The allowlist limits service names, not individual entities or payloads. The
 agent orchestrator remains responsible for user authorization and target
 selection; tool schemas are not a security sandbox.
 
-For asynchronous runtimes, run synchronous calls in a worker thread:
-
-```python
-import asyncio
-
-state = await asyncio.to_thread(ha.get_state, "light.desk")
-```
-
-Cancelling that coroutine does not cancel a request already running in the
-worker thread or undo a device action.
+See [MCP compatibility](docs/mcp-compatibility.md) for the boundary between
+Homepy and Home Assistant's native MCP/Assist surfaces.
 
 ## JSON command line
 
-All commands write JSON. Successful output goes to stdout; failures go to
-stderr and use a nonzero exit status.
+Every command writes JSON. Successful output goes to stdout. Stderr holds at
+most one JSON object: an `error` key on failure, with a nonzero exit status,
+and a `warning` key for plain-HTTP connections.
 
 ```powershell
 python -m homepy health
@@ -273,9 +286,6 @@ An HTTP 200 response can still contain a structured Assist domain error; that
 response is preserved. A timeout leaves the outcome unknown and is never
 retried.
 
-See [MCP compatibility](docs/mcp-compatibility.md) for the boundary between
-Homepy and Home Assistant's native MCP/Assist surfaces.
-
 ## API surface
 
 | Methods | Purpose |
@@ -292,10 +302,19 @@ Homepy and Home Assistant's native MCP/Assist surfaces.
 | `get_areas`, `get_devices`, `get_entity_registry` | WebSocket registry discovery |
 | `watch_events`, `process_conversation` | Bounded events and Conversation |
 
-## Data safety and limitations
+## Data safety and privacy
+
+Homepy talks only to the Home Assistant host you configure. It has no
+telemetry, stores nothing on disk, and never logs tokens or response bodies.
 
 - TLS certificate verification is enabled by default; use `ca_file` or
   `HA_CA_FILE` for a private CA.
+- Plain HTTP to a non-loopback host emits `homepy.InsecureTransportWarning`
+  because the bearer token is unencrypted. Prefer an HTTPS URL; if using a
+  tunnel, verify the actual route. A private or Tailscale-looking address alone
+  does not prove encryption. After verifying a tunnel, silence it with
+  `warnings.simplefilter("ignore", homepy.InsecureTransportWarning)`. The CLI
+  reports it as `{"warning": {"code": "insecure_transport", ...}}` on stderr.
 - HTTP redirects are rejected, ambient HTTP proxies are ignored, and failed
   actions are never retried automatically.
 - Errors omit credentials, request bodies, response bodies, URLs, and raw
@@ -304,10 +323,20 @@ Homepy and Home Assistant's native MCP/Assist surfaces.
   Check the device state before deciding whether to issue another action.
 - `TransportError.category` distinguishes DNS, refused-connection, timeout, TLS,
   and other network failures. HTTP errors expose `status_code`.
-- Homepy does not automate browser clicks, edit dashboards or integration
-  registries, or manage Supervisor. Those surfaces need separate clients.
-- Live Home Assistant connectivity, Tailscale routing, household actions, and
-  static type checking are outside the local test suite's verification boundary.
+
+## Platform status and limitations
+
+Homepy is pure Python and runs anywhere Python 3.11 or later does. CI runs the
+suite on Windows and Linux with Python 3.11 and 3.14.
+
+- **Scope:** Homepy does not automate browser clicks, edit dashboards or
+  integration registries, or manage Supervisor. Those surfaces need separate
+  clients.
+- **Timeouts:** REST timeouts apply per socket operation, not per request.
+  Synchronous OS DNS resolution can exceed the WebSocket setup deadline.
+- **Live verification:** Live Home Assistant connectivity, Tailscale routing,
+  household actions, and static type checking are outside the local test
+  suite's verification boundary.
 
 ## Develop and build
 
@@ -328,12 +357,6 @@ python -m build --no-isolation
 Artifacts are written to `dist/`. Tests use synthetic data and loopback
 HTTP/WebSocket/TLS servers; they do not contact or operate a real Home Assistant
 installation. See [PLAN.md](PLAN.md) for architecture and verification scope.
-
-## Transport privacy
-
-Plain HTTP to a non-loopback host emits a warning because the bearer token is
-unencrypted. Prefer an HTTPS URL; if using a tunnel, verify the actual route.
-A private or Tailscale-looking address alone does not prove encryption.
 
 ## License
 

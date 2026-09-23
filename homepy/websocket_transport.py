@@ -54,6 +54,21 @@ def _remaining(deadline: float | None) -> float | None:
     return value
 
 
+def _command_result(envelope: dict[str, Any], command_id: int) -> Any:
+    """Validate one command result envelope and return its ``result`` payload."""
+    if type(envelope.get("id")) is not int or envelope["id"] != command_id or envelope.get("type") != "result":
+        raise ResponseError("WebSocket command response envelope was invalid")
+    if type(envelope.get("success")) is not bool:
+        raise ResponseError("WebSocket command response envelope was invalid")
+    if not envelope["success"]:
+        error = envelope.get("error")
+        # The exception keeps only known protocol codes, never server text.
+        raise WebSocketCommandError(command_code=error.get("code") if isinstance(error, dict) else "unknown_error")
+    if "result" not in envelope:
+        raise ResponseError("WebSocket command response envelope was invalid")
+    return envelope["result"]
+
+
 def _transport_error(exc: BaseException) -> TransportError:
     if isinstance(exc, socket.gaierror):
         return TransportError(category="dns")
@@ -319,7 +334,7 @@ class WebSocketTransport:
 
     def _handshake(self, sock: socket.socket, deadline: float) -> WebSocketSession:
         key = base64.b64encode(secrets.token_bytes(16)).decode("ascii")
-        path = f"{self.config.path_prefix}/api/websocket" or "/api/websocket"
+        path = f"{self.config.path_prefix}/api/websocket"
         request = (
             f"GET {path} HTTP/1.1\r\n"
             f"Host: {_host_header(self.config)}\r\n"
@@ -430,20 +445,7 @@ class WebSocketTransport:
         try:
             session = self.open(deadline=deadline)
             session.send({"id": 1, "type": command}, _remaining(deadline))
-            result = session.receive(_remaining(deadline))
-            if type(result.get("id")) is not int or result.get("id") != 1 or result.get("type") != "result":
-                raise ResponseError("WebSocket command response envelope was invalid")
-            if type(result.get("success")) is not bool:
-                raise ResponseError("WebSocket command response envelope was invalid")
-            if result["success"] is not True:
-                error = result.get("error")
-                code = error.get("code") if isinstance(error, dict) else None
-                if not isinstance(code, str) or code not in {"unknown_command", "unauthorized", "invalid_format"}:
-                    code = "unknown_error"
-                raise WebSocketCommandError(command_code=code)
-            if "result" not in result:
-                raise ResponseError("WebSocket command response envelope was invalid")
-            return result.get("result")
+            return _command_result(session.receive(_remaining(deadline)), 1)
         except WebSocketTimeout:
             raise TransportError(category="timeout") from None
         except WebSocketClosed:
