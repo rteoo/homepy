@@ -310,6 +310,8 @@ class HomeAssistant:
         params: dict[str, Any] = {}
         _params_timestamp(params, "end_time", end)
         if entity_id is not None:
+            if not isinstance(entity_id, str) or not entity_id:
+                raise ValueError("entity_id must be a non-empty string")
             params["entity"] = entity_id
         path = "logbook"
         if start is not None:
@@ -347,6 +349,8 @@ class HomeAssistant:
         self, template: str, variables: Mapping[str, Any] | None = None
     ) -> str:
         """Render a Home Assistant template as plain text."""
+        if not isinstance(template, str) or not template:
+            raise ValueError("template must be a non-empty string")
         data: dict[str, Any] = {"template": template}
         if variables is not None:
             data["variables"] = dict(variables)

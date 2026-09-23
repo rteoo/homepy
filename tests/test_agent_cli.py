@@ -83,6 +83,22 @@ class AgentToolsTests(unittest.TestCase):
         with self.assertRaisesRegex(AgentToolError, "not allowed"):
             limited.dispatch("ha_call_service", {"domain": "light", "service": "turn_off"})
 
+    def test_allowlist_entries_that_can_never_match_are_rejected(self):
+        for entry in ("light", "light.", ".turn_on", "light.turn.on"):
+            with self.subTest(entry=entry), self.assertRaisesRegex(TypeError, "DOMAIN.SERVICE"):
+                AgentTools(FakeClient(), allow_actions=True, allowed_services=[entry])
+        client, out, err = FakeClient(), StringIO(), StringIO()
+        status = main(
+            ["call", "light", "turn_on", "--allow-actions", "--allowed-service", "light"],
+            environ={"HA_TOKEN": "SECRET", "HA_URL": HTTPS_URL},
+            client_factory=lambda *a, **kw: client,
+            stdout=out,
+            stderr=err,
+        )
+        self.assertEqual(status, 2)
+        self.assertEqual(json.loads(err.getvalue())["error"]["code"], "invalid_arguments")
+        self.assertEqual(client.calls, [])
+
     def test_bad_arguments_are_rejected_without_dynamic_dispatch(self):
         tools = AgentTools(FakeClient())
         with self.assertRaisesRegex(AgentToolError, "Unknown"):

@@ -183,7 +183,8 @@ result = agent.dispatch("ha_get_state", {"entity_id": "light.desk"})
 
 The default `allow_actions=False` hides and denies the service-call tool. An
 empty `allowed_services` collection denies every service; `None` permits any
-service only when actions are explicitly enabled. Discovery and event tools are
+service only when actions are explicitly enabled. Each entry must use the
+`DOMAIN.SERVICE` form; an entry that could never match raises `TypeError`. Discovery and event tools are
 also opt-in with `include_discovery=True` and `include_events=True`.
 
 The allowlist limits service names, not individual entities or payloads. The
