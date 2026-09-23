@@ -74,8 +74,10 @@ that an interrupted stream was complete.
   reproducible. A stream is an observation window, not a durable event archive.
 - Add CLI `watch` with required `--event-type`, `--max-events`, and `--duration`
   options using the same defaults. Emit one event JSON object per stdout line,
-  flushing each one, with no ordinary JSON wrapper or success footer. Errors use
-  JSON stderr and a nonzero status. Ctrl-C closes the stream and exits 130.
+  flushing each one, with no ordinary JSON wrapper or success footer. Stderr
+  holds at most one JSON object: an `error` key with a nonzero status on failure,
+  and a `warning` key for plain-HTTP connections. Ctrl-C closes the stream and
+  exits 130.
   Document that previously emitted lines can remain valid when the exit fails.
 - Add `include_events=False` to AgentTools and matching CLI tool-registration
   option. When enabled, expose `ha_collect_events` with a required event type,
@@ -106,7 +108,7 @@ that an interrupted stream was complete.
   connection, no resubscription, and no mutation command are sent automatically.
 - Check bounded cleanup with missing unsubscribe acknowledgement and a broken
   socket. Verify Ctrl-C behavior on supported hosts separately from unit mocks.
-- Check NDJSON parsing and flushing, error-only stderr, failure status after
+- Check NDJSON parsing and flushing, single-document stderr, failure status after
   partial output, and agent collection output with both ordinary stop reasons.
 - Retain redaction tests for tokens, response details, traceback chains, and
   application DEBUG logging. Validate denied agent calls send no traffic.
