@@ -15,6 +15,7 @@ from .websocket_transport import (
     WebSocketTimeout,
     WebSocketSession,
     WebSocketTransport,
+    _command_result,
     _remaining,
 )
 
@@ -103,21 +104,7 @@ class EventStream(Iterator[dict[str, Any]]):
                 {"id": subscription_id, "type": "subscribe_events", "event_type": self.event_type},
                 _remaining(deadline),
             )
-            ack = session.receive(_remaining(deadline))
-            if type(ack.get("id")) is not int or ack.get("id") != subscription_id or ack.get("type") != "result":
-                raise ResponseError("WebSocket subscription response envelope was invalid")
-            if type(ack.get("success")) is not bool:
-                raise ResponseError("WebSocket subscription response envelope was invalid")
-            if ack["success"] is not True:
-                error = ack.get("error")
-                code = error.get("code") if isinstance(error, dict) else None
-                from .websocket_transport import WebSocketCommandError
-
-                if not isinstance(code, str) or code not in {"unknown_command", "unauthorized", "invalid_format"}:
-                    code = "unknown_error"
-                raise WebSocketCommandError(command_code=code)
-            if "result" not in ack:
-                raise ResponseError("WebSocket subscription response envelope was invalid")
+            _command_result(session.receive(_remaining(deadline)), subscription_id)
             self._observation_deadline = (
                 time.monotonic() + self.duration if self.duration is not None else None
             )
@@ -150,9 +137,6 @@ class EventStream(Iterator[dict[str, Any]]):
         except WebSocketClosed:
             self._abort()
             raise TransportError(category="network") from None
-        except (TransportError, ResponseError):
-            self._abort()
-            raise
         except BaseException:
             self._abort()
             raise
