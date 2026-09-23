@@ -364,6 +364,8 @@ Artifacts are written to `dist/`. Tests use synthetic data and loopback
 HTTP/WebSocket/TLS servers; they do not contact or operate a real Home Assistant
 installation. See [PLAN.md](PLAN.md) for architecture and verification scope.
 
+Release history is documented in [CHANGELOG.md](CHANGELOG.md).
+
 ## License
 
 Homepy is released under the [MIT License](LICENSE).
